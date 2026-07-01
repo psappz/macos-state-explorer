@@ -193,3 +193,19 @@ def test_repair_defaults_to_ranked_candidate_action_when_action_id_is_omitted():
 
     assert result.action_id == "action-a"
     assert result.candidate_id == "repair-a"
+
+
+def test_repair_action_reports_removed_option_failures_clearly():
+    executed: list[list[str]] = []
+    engine = FrameworkDiagnosticEngine(
+        _module(
+            executed,
+            command_result=(1, "", "The -kill option has been removed because it was dangerous and no longer useful."),
+        )
+    )
+
+    result = engine.repair(_snapshot(), action_id="action-a", dry_run=False, confirmed=True)
+
+    assert result.status is RepairStatus.FAILED
+    assert "removed an lsregister option" in result.message
+    assert "-kill option has been removed" in result.errors[0]

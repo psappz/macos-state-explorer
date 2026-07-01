@@ -39,6 +39,18 @@ class RepairStatus(str, Enum):
     NOT_FOUND = "NOT_FOUND"
 
 
+def _repair_command_failure_message(exit_code: int, stderr: str) -> str:
+    normalized = stderr.lower()
+    if "option has been removed" in normalized:
+        return (
+            "Command failed because this macOS version removed an lsregister option; "
+            f"do not retry the obsolete option set. Exit code: {exit_code}."
+        )
+    if "illegal option" in normalized or "unknown option" in normalized or "invalid option" in normalized:
+        return f"Command failed because this macOS version does not support one of the requested options. Exit code: {exit_code}."
+    return f"Command failed with exit code {exit_code}."
+
+
 class RepairPlanStatus(str, Enum):
     DRY_RUN = "DRY_RUN"
     SUCCESS = "SUCCESS"
@@ -99,6 +111,17 @@ class RepairCommand:
 
 
 CommandRunner = Callable[[list[str]], tuple[int, str, str]]
+
+
+@dataclass(frozen=True)
+class RepairPreflightResult:
+    supported: bool
+    message: str
+    errors: tuple[str, ...] = ()
+    executed_commands: tuple[dict[str, Any], ...] = ()
+
+
+RepairPreflight = Callable[[CommandRunner], RepairPreflightResult]
 
 
 @dataclass(frozen=True)
@@ -197,6 +220,7 @@ class RepairAction:
     rollback: RepairRollback = field(default_factory=lambda: RepairRollback(False, "No automated rollback is available."))
     files_touched: tuple[str, ...] = ()
     runner: CommandRunner | None = None
+    preflight: RepairPreflight | None = None
 
     @staticmethod
     def candidate(
@@ -268,15 +292,10 @@ class RepairAction:
             )
         runner = self.runner or default_command_runner
         executed: list[dict[str, Any]] = []
-        for command in self.commands:
-            exit_code, stdout, stderr = runner(list(command.argv))
-            record = command.to_json_dict(exit_code=exit_code)
-            if stdout:
-                record["stdout"] = stdout
-            if stderr:
-                record["stderr"] = stderr
-            executed.append(record)
-            if exit_code != 0:
+        if self.preflight is not None:
+            preflight_result = self.preflight(runner)
+            executed.extend(preflight_result.executed_commands)
+            if not preflight_result.supported:
                 return RepairResult(
                     module=module,
                     command_name=command_name or module,
@@ -289,9 +308,35 @@ class RepairAction:
                     preconditions=self.preconditions,
                     rollback=self.rollback,
                     executed_commands=tuple(executed),
-                    message=f"Command failed with exit code {exit_code}.",
+                    message=preflight_result.message,
                     files_touched=self.files_touched,
-                    errors=(stderr or f"Command failed with exit code {exit_code}.",),
+                    errors=preflight_result.errors or (preflight_result.message,),
+                )
+        for command in self.commands:
+            exit_code, stdout, stderr = runner(list(command.argv))
+            record = command.to_json_dict(exit_code=exit_code)
+            if stdout:
+                record["stdout"] = stdout
+            if stderr:
+                record["stderr"] = stderr
+            executed.append(record)
+            if exit_code != 0:
+                message = _repair_command_failure_message(exit_code, stderr)
+                return RepairResult(
+                    module=module,
+                    command_name=command_name or module,
+                    action_id=self.id,
+                    candidate_id=candidate_id,
+                    status=RepairStatus.FAILED,
+                    dry_run=False,
+                    safety_classification=self.safety,
+                    why_safe=self.why_safe,
+                    preconditions=self.preconditions,
+                    rollback=self.rollback,
+                    executed_commands=tuple(executed),
+                    message=message,
+                    files_touched=self.files_touched,
+                    errors=(stderr or message,),
                 )
         return RepairResult(
             module=module,
