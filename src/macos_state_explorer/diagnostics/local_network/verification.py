@@ -66,6 +66,7 @@ def verify_local_network(
     *,
     expected_branch_id: str = "manual-empty-trash-reboot",
     trace_analysis: dict[str, Any] | None = None,
+    failed_branches: set[str] | None = None,
 ) -> LocalNetworkVerification:
     """Evaluate whether the expected Local Network repair branch worked.
 
@@ -78,10 +79,11 @@ def verify_local_network(
     solver_evidence = collect_local_network_evidence(snapshot, trace_analysis=trace_analysis)
     solver_evidence_by_id = {item.id: item for item in solver_evidence}
     candidates = solution.repair_plan
+    failed_branches = set(failed_branches or set())
     current_index = _candidate_index(candidates, expected_branch_id)
 
     if expected_branch_id == "trace-local-network" and trace_analysis:
-        next_candidate = candidates[0] if candidates and candidates[0].id != "trace-local-network" else None
+        next_candidate = _next_unfailed_candidate(candidates, failed_branches, exclude={"trace-local-network"})
         trace_evidence_ids = [
             evidence_id
             for evidence_id in ("LN-E004", "LN-E005", "LN-E006", "LN-E009")
@@ -92,7 +94,7 @@ def verify_local_network(
                 status="FAILED",
                 branch_id=expected_branch_id,
                 expected_change="Trace evidence should identify a more specific root cause or next repair candidate.",
-                observed_result="Trace evidence produced a stronger evidence-ranked repair candidate than another trace capture.",
+                observed_result=_trace_observed_result(failed_branches),
                 current_diagnosis=diagnosis,
                 next_repair_candidate=next_candidate,
                 continues_workflow=True,
@@ -199,7 +201,7 @@ def verify_local_network(
         evidence_ids=_diagnosis_evidence_ids(diagnosis),
         transition="retry-current-branch",
         next_step="Run the trace branch and inspect the generated Root-cause Signals before advancing repairs.",
-        retry_guidance="Run mse trace local-network --out ~/Desktop/mse-local-network-trace while opening System Settings → Privacy & Security → Local Network.",
+        retry_guidance="Run mse trace local-network ~/Desktop/mse-local-network-trace while opening System Settings → Privacy & Security → Local Network.",
         fallback_guidance="If the trace is inconclusive, run mse collect ~/Desktop/mse-local-network-collect --fast and review the full read-only evidence bundle.",
     )
 
@@ -239,6 +241,27 @@ def _candidate_index(candidates: list[RepairCandidate], branch_id: str) -> int:
         if candidate.id == branch_id:
             return index
     return -1
+
+
+def _next_unfailed_candidate(
+    candidates: list[RepairCandidate],
+    failed_branches: set[str],
+    *,
+    exclude: set[str] | None = None,
+) -> RepairCandidate | None:
+    excluded = set(exclude or set()) | set(failed_branches)
+    for candidate in candidates:
+        if candidate.id not in excluded:
+            return candidate
+    return None
+
+
+def _trace_observed_result(failed_branches: set[str]) -> str:
+    base = "Trace evidence produced a stronger evidence-ranked repair candidate than another trace capture."
+    if not failed_branches:
+        return base
+    failed = ", ".join(sorted(failed_branches))
+    return f"{base} Previously failed workflow branches are excluded from the next recommendation: {failed}."
 
 
 def _known_branch_ids(candidates: list[RepairCandidate]) -> set[str]:

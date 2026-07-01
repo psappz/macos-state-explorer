@@ -23,7 +23,7 @@ from macos_state_explorer.diagnostics.rules import RuleMatch
 LOCAL_NETWORK_SUPPORTING_COMMANDS = (
     "mse diagnose local-network",
     "mse launchservices ~/Desktop/mse-launchservices",
-    "mse trace local-network --out ~/Desktop/mse-local-network-trace",
+    "mse trace local-network ~/Desktop/mse-local-network-trace",
     "mse collect ~/Desktop/mse-local-network-collect --fast",
 )
 
@@ -86,7 +86,7 @@ def local_network_repair_candidates(
             risk="Low: read-only logging and filesystem observation; sudo may be requested by macOS for fs_usage/lsof visibility.",
             manual_action="Run the trace command, open System Settings → Privacy & Security → Local Network, wait 20–30 seconds, then stop the trace.",
             expected_result="The trace should identify whether SecurityPrivacyExtension, LaunchServices .csstore reads, TCC/REG, or another privacy cache is feeding the stale GUI entry.",
-            verification_command="mse trace local-network --out ~/Desktop/mse-local-network-trace",
+            verification_command="mse trace local-network ~/Desktop/mse-local-network-trace",
             fallback_branch="If the trace still does not identify a safe repair, collect a full read-only bundle with mse collect and inspect the generated evidence before proposing any higher-risk action.",
             evidence_ids=trace_evidence,
             action_id="open-local-network-settings",

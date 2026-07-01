@@ -69,7 +69,7 @@ def _chrome_launchservices_diagnosis(findings: list[DiagnosticFinding]) -> Local
                 description="If diagnosis still reports stale Chrome state, capture a focused read-only trace.",
                 risk="low",
                 mode="read-only",
-                commands=["mse trace local-network --out ~/Desktop/mse-local-network-trace"],
+                commands=["mse trace local-network ~/Desktop/mse-local-network-trace"],
                 expected_result="Trace artifacts help identify whether System Settings is reading a cache or registry layer.",
             )
         ],
@@ -109,7 +109,7 @@ def _missing_tcc_rows_diagnosis(findings: list[DiagnosticFinding]) -> LocalNetwo
                 description="Capture a read-only trace if the app accesses local network resources but no prompt appears.",
                 risk="low",
                 mode="read-only",
-                commands=["mse trace local-network --out ~/Desktop/mse-local-network-trace"],
+                commands=["mse trace local-network ~/Desktop/mse-local-network-trace"],
                 expected_result="Trace artifacts show whether the app reaches APIs that should trigger Local Network privacy.",
             )
         ],
@@ -146,7 +146,7 @@ def _stale_launchservices_diagnosis(findings: list[DiagnosticFinding]) -> LocalN
                 description="Use a focused read-only trace if stale records persist after safe manual remediation.",
                 risk="low",
                 mode="read-only",
-                commands=["mse trace local-network --out ~/Desktop/mse-local-network-trace"],
+                commands=["mse trace local-network ~/Desktop/mse-local-network-trace"],
                 expected_result="Trace artifacts identify which registry or privacy layer is involved.",
             )
         ],
@@ -160,7 +160,7 @@ def _no_clear_issue_diagnosis(findings: list[DiagnosticFinding], action_count: i
         description="No specific Chrome LaunchServices or TCC Local Network issue was identified in the fast snapshot.",
         risk="low",
         mode="read-only",
-        commands=["mse trace local-network --out ~/Desktop/mse-local-network-trace"],
+        commands=["mse trace local-network ~/Desktop/mse-local-network-trace"],
         expected_result="Trace artifacts provide more evidence about System Settings and app privacy behavior.",
     )
     return LocalNetworkDiagnosis(

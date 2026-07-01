@@ -756,6 +756,7 @@ class FrameworkDiagnosticEngine:
             )
             return _finalize_repair_plan_result(result, audit_log)
         verifier = self._module.repair_verifier
+        failed_repair_branches = set((context or {}).get("failed_branches", []))
         for step in plan.steps:
             if step.action is None:
                 step_results.append(
@@ -823,7 +824,9 @@ class FrameworkDiagnosticEngine:
             step_status = repair_result.status.value
             if verifier is not None:
                 verification_snapshot = snapshot_provider() if snapshot_provider else snapshot
-                verification = verifier(verification_snapshot, step.candidate, context)
+                verifier_context = dict(context or {})
+                verifier_context["failed_branches"] = set(failed_repair_branches)
+                verification = verifier(verification_snapshot, step.candidate, verifier_context)
                 step_status = verification.status
             step_results.append(
                 RepairStepResult(
@@ -848,6 +851,11 @@ class FrameworkDiagnosticEngine:
                     message="Repair plan stopped after verification succeeded.",
                 )
                 return _finalize_repair_plan_result(result, audit_log)
+            if verification and verification.status == "FAILED":
+                if step.action is None:
+                    failed_repair_branches.add(step.candidate_id)
+                if step.action_id:
+                    failed_repair_branches.add(step.action_id)
             if verification and verification.status not in {"FAILED"}:
                 result = RepairPlanResult(
                     module=self._module.id,

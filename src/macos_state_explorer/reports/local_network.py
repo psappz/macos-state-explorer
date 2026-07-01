@@ -237,7 +237,7 @@ def _next_actions_to_json(
             "candidate_id": verification.branch_id,
         }
     )
-    trace_command = "mse trace local-network --out ~/Desktop/mse-local-network-trace"
+    trace_command = "mse trace local-network ~/Desktop/mse-local-network-trace"
     if trace_analysis is not None:
         trace_command = "mse solve local-network --trace ~/Desktop/mse-local-network-trace"
     actions.append(
