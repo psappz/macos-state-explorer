@@ -10,7 +10,9 @@ from rich.console import Console
 from macos_state_explorer.collectors.launchservices import LaunchServicesCollector
 from macos_state_explorer.core.snapshot import create_snapshot
 from macos_state_explorer.core.util import write_json
+from macos_state_explorer.diagnostics.framework import FrameworkDiagnosticEngine, RepairStatus
 from macos_state_explorer.diagnostics.local_network.engine import diagnose_local_network
+from macos_state_explorer.diagnostics.local_network.module import LOCAL_NETWORK_MODULE
 from macos_state_explorer.diagnostics.local_network.renderer import render_terminal_report
 from macos_state_explorer.diagnostics.local_network.verification import render_verification_report, verify_local_network
 from macos_state_explorer.evidence.engine import extract_evidence
@@ -31,12 +33,14 @@ diagnose_app = typer.Typer(no_args_is_help=True)
 solve_app = typer.Typer(no_args_is_help=True)
 verify_app = typer.Typer(no_args_is_help=True)
 report_app = typer.Typer(no_args_is_help=True)
+repair_app = typer.Typer(no_args_is_help=True)
 app.add_typer(trace_app, name="trace")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(diagnose_app, name="diagnose")
 app.add_typer(solve_app, name="solve")
 app.add_typer(verify_app, name="verify")
 app.add_typer(report_app, name="report")
+app.add_typer(repair_app, name="repair")
 console = Console()
 
 
@@ -123,6 +127,30 @@ def verify_local_network_cmd(
         typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
     else:
         console.print(render_verification_report(result), markup=False)
+
+
+@repair_app.command("local-network")
+def repair_local_network_cmd(
+    action: str | None = typer.Option(None, "--action", help="Executable repair action id."),
+    branch: str | None = typer.Option(None, "--branch", help="Repair candidate/branch id to repair."),
+    trace: Path | None = None,
+    dry_run: bool = typer.Option(True, "--dry-run/--execute", help="Preview or execute the selected repair action."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
+    snap = create_snapshot(fast=True)
+    result = FrameworkDiagnosticEngine(LOCAL_NETWORK_MODULE).repair(
+        snap,
+        action_id=action,
+        candidate_id=branch,
+        dry_run=dry_run,
+        context={"trace_analysis": load_trace_analysis(trace)},
+    )
+    if json_output:
+        typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
+    else:
+        console.print(result.render_text(), markup=False)
+    if result.status is RepairStatus.NOT_FOUND:
+        raise typer.Exit(1)
 
 
 @report_app.command("local-network")

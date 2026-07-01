@@ -1,9 +1,20 @@
 from __future__ import annotations
 
-from typing import Any, Sequence
+from pathlib import Path
+from typing import Any, Sequence, cast
 
 from macos_state_explorer.core.model import Snapshot
-from macos_state_explorer.diagnostics.framework import DiagnosticEvidence, DiagnosticModule, RepairCandidate
+from macos_state_explorer.diagnostics.framework import (
+    CommandRunner,
+    DiagnosticEvidence,
+    DiagnosticModule,
+    RepairAction,
+    RepairCandidate,
+    RepairCommand,
+    RepairPrecondition,
+    RepairRollback,
+    RepairSafety,
+)
 from macos_state_explorer.diagnostics.local_network.evidence import collect_local_network_evidence
 from macos_state_explorer.diagnostics.local_network.rules import LOCAL_NETWORK_RULES
 from macos_state_explorer.diagnostics.rules import RuleMatch
@@ -55,6 +66,7 @@ def local_network_repair_candidates(
             verification_command="mse diagnose local-network",
             fallback_branch="If Chrome/Google Local Network entries remain, continue with branch 2: manual Chrome reinstall.",
             evidence_ids=trash_evidence,
+            action_id=None,
         ),
         "manual-reinstall-chrome": RepairCandidate(
             id="manual-reinstall-chrome",
@@ -65,6 +77,7 @@ def local_network_repair_candidates(
             verification_command="mse diagnose local-network",
             fallback_branch="If Local Network still shows the same broken Chrome state, continue with branch 3: capture a focused trace.",
             evidence_ids=reinstall_evidence,
+            action_id="refresh-launchservices-user-cache",
         ),
         "trace-local-network": RepairCandidate(
             id="trace-local-network",
@@ -75,6 +88,7 @@ def local_network_repair_candidates(
             verification_command="mse trace local-network --out ~/Desktop/mse-local-network-trace",
             fallback_branch="If the trace still does not identify a safe repair, collect a full read-only bundle with mse collect and inspect the generated evidence before proposing any higher-risk action.",
             evidence_ids=trace_evidence,
+            action_id="open-local-network-settings",
         ),
     }
 
@@ -119,6 +133,78 @@ def local_network_diagnosis_builder(
     )
 
 
+def local_network_repair_actions(
+    evidence: Sequence[DiagnosticEvidence],
+    candidates: dict[str, RepairCandidate],
+    context: dict[str, Any] | None = None,
+) -> dict[str, RepairAction]:
+    context = context or {}
+    runner = context.get("command_runner")
+    command_runner = cast(CommandRunner, runner) if callable(runner) else None
+    lsregister = Path(
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+    )
+    return {
+        "refresh-launchservices-user-cache": RepairAction(
+            id="refresh-launchservices-user-cache",
+            title="Refresh the user LaunchServices cache",
+            description="Regenerate the per-user LaunchServices derived cache from installed application registrations.",
+            safety=RepairSafety.MODERATE,
+            why_safe=(
+                "This is limited to the user-domain LaunchServices derived cache; it does not delete applications, "
+                "profiles, TCC databases, or user documents, and macOS can rebuild the cache deterministically."
+            ),
+            commands=(
+                RepairCommand(
+                    argv=(str(lsregister), "-kill", "-r", "-domain", "user"),
+                    description="Rebuild the user LaunchServices registration cache.",
+                ),
+            ),
+            preconditions=(
+                RepairPrecondition(
+                    id="lsregister-present",
+                    title="lsregister helper exists",
+                    satisfied=lsregister.exists(),
+                    detail=str(lsregister),
+                ),
+            ),
+            rollback=RepairRollback(
+                available=False,
+                description="No rollback is needed for a derived cache refresh; macOS rebuilds LaunchServices registrations from installed apps.",
+                metadata={"scope": "user-domain-derived-cache"},
+            ),
+            runner=command_runner,
+        ),
+        "open-local-network-settings": RepairAction(
+            id="open-local-network-settings",
+            title="Open Local Network privacy settings",
+            description="Open the System Settings Local Network privacy pane for user-guided inspection.",
+            safety=RepairSafety.INTERACTIVE,
+            why_safe="Opening System Settings is interactive and read-only until the user changes a toggle manually.",
+            commands=(
+                RepairCommand(
+                    argv=("open", "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"),
+                    description="Open System Settings → Privacy & Security → Local Network.",
+                ),
+            ),
+            preconditions=(
+                RepairPrecondition(
+                    id="macos-open-command",
+                    title="macOS open command is available",
+                    satisfied=Path("/usr/bin/open").exists(),
+                    detail="/usr/bin/open",
+                ),
+            ),
+            rollback=RepairRollback(
+                available=True,
+                description="Close the opened System Settings window without changing any toggles.",
+                metadata={"user_interaction_required": True},
+            ),
+            runner=command_runner,
+        ),
+    }
+
+
 LOCAL_NETWORK_MODULE = DiagnosticModule(
     id="local-network",
     command_name="local-network",
@@ -126,6 +212,7 @@ LOCAL_NETWORK_MODULE = DiagnosticModule(
     rules=LOCAL_NETWORK_RULES,
     repair_candidates=local_network_repair_candidates,
     diagnosis_builder=local_network_diagnosis_builder,
+    repair_actions=local_network_repair_actions,
     fallback_repair_order=("trace-local-network",),
     supporting_commands=LOCAL_NETWORK_SUPPORTING_COMMANDS,
 )
