@@ -121,8 +121,6 @@ def test_repair_local_network_confirm_executes_plan_and_verifies(monkeypatch):
 
     def fake_runner(command: list[str]) -> tuple[int, str, str]:
         executed.append(command)
-        if command[-1] == "-h":
-            return 0, "lsregister: [OPTIONS]\n  -r Recursive directory scan\n  -f force-update\n  -apps user\n", ""
         return 0, "ok", ""
 
     monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: next(snapshots))
@@ -137,7 +135,6 @@ def test_repair_local_network_confirm_executes_plan_and_verifies(monkeypatch):
     assert payload["dry_run"] is False
     assert payload["confirmed"] is True
     assert executed == [
-        ["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-h"],
         [
             "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
             "-r",
@@ -158,8 +155,6 @@ def test_repair_local_network_confirmed_execution_never_reports_dry_run_status(m
 
     def fake_runner(command: list[str]) -> tuple[int, str, str]:
         executed.append(command)
-        if command[-1] == "-h":
-            return 0, "lsregister: [OPTIONS]\n  -r Recursive directory scan\n  -f force-update\n  -apps user\n", ""
         return 0, "ok", ""
 
     monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: next(snapshots))
@@ -194,22 +189,52 @@ def test_refresh_launchservices_default_action_never_uses_removed_kill_option(mo
     ]
 
 
-def test_refresh_launchservices_unsupported_lsregister_help_fails_with_guidance():
+def test_refresh_launchservices_preflight_uncertainty_does_not_block_safe_execution():
     executed: list[list[str]] = []
 
     def fake_runner(command: list[str]) -> tuple[int, str, str]:
         executed.append(command)
-        if command[-1] == "-h":
-            return 0, "lsregister: [OPTIONS] [ <path>... ]\n  -r Recursive directory scan\n", ""
-        return 0, "unexpected", ""
+        assert command[-1] != "-h"
+        return 0, "refreshed", ""
+
+    actions = LOCAL_NETWORK_MODULE.repair_actions([], {}, {"command_runner": fake_runner})
+    result = actions["refresh-launchservices-user-cache"].run(dry_run=False)
+
+    assert result.status.name == "SUCCESS"
+    assert executed == [
+        [
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+            "-r",
+            "-f",
+            "-apps",
+            "user",
+        ]
+    ]
+
+
+def test_refresh_launchservices_unsupported_command_failure_reports_stderr_and_guidance():
+    executed: list[list[str]] = []
+
+    def fake_runner(command: list[str]) -> tuple[int, str, str]:
+        executed.append(command)
+        return 64, "", "lsregister: unknown option -- apps"
 
     actions = LOCAL_NETWORK_MODULE.repair_actions([], {}, {"command_runner": fake_runner})
     result = actions["refresh-launchservices-user-cache"].run(dry_run=False)
 
     assert result.status.name == "FAILED"
-    assert executed == [["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-h"]]
-    assert "unsupported lsregister option set" in result.message.lower()
-    assert any("manual reinstall" in error.lower() for error in result.errors)
+    assert executed == [
+        [
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+            "-r",
+            "-f",
+            "-apps",
+            "user",
+        ]
+    ]
+    assert "does not support one of the requested options" in result.message
+    assert "manual reinstall or trace fallback" in result.message
+    assert result.errors == ("lsregister: unknown option -- apps",)
 
 
 def test_repair_local_network_explicit_action_preserves_single_action_json(monkeypatch):
@@ -263,8 +288,6 @@ def test_local_network_repair_execution_uses_injected_runner_for_idempotency(mon
 
     def fake_runner(command: list[str]) -> tuple[int, str, str]:
         executed.append(command)
-        if command[-1] == "-h":
-            return 0, "lsregister: [OPTIONS]\n  -r Recursive directory scan\n  -f force-update\n  -apps user\n", ""
         return 0, "ok", ""
 
     actions = LOCAL_NETWORK_MODULE.repair_actions([], {}, {"command_runner": fake_runner})
@@ -274,7 +297,6 @@ def test_local_network_repair_execution_uses_injected_runner_for_idempotency(mon
     assert first.status.name == "SUCCESS"
     assert second.status.name == "SUCCESS"
     assert executed == [
-        ["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-h"],
         [
             "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
             "-r",
@@ -282,7 +304,6 @@ def test_local_network_repair_execution_uses_injected_runner_for_idempotency(mon
             "-apps",
             "user",
         ],
-        ["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-h"],
         [
             "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
             "-r",

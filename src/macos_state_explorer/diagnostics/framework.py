@@ -47,7 +47,11 @@ def _repair_command_failure_message(exit_code: int, stderr: str) -> str:
             f"do not retry the obsolete option set. Exit code: {exit_code}."
         )
     if "illegal option" in normalized or "unknown option" in normalized or "invalid option" in normalized:
-        return f"Command failed because this macOS version does not support one of the requested options. Exit code: {exit_code}."
+        return (
+            "Command failed because this macOS version does not support one of the requested options; "
+            "use the manual reinstall or trace fallback branch before retrying automated refresh. "
+            f"Exit code: {exit_code}."
+        )
     return f"Command failed with exit code {exit_code}."
 
 

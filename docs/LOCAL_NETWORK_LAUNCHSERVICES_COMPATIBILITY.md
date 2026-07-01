@@ -8,7 +8,7 @@ Recent macOS releases reject that option with:
 The -kill option has been removed because it was dangerous and no longer useful.
 ```
 
-The Local Network repair action is limited to derived LaunchServices/user registration refresh behavior. It must not delete applications, Chrome profiles, TCC databases, user documents, or the LaunchServices database.
+The Local Network repair action is limited to derived LaunchServices/user registration refresh behavior. It must not delete applications, Chrome profiles, TCC databases, user documents, arbitrary LaunchServices files, or the LaunchServices database.
 
 The supported refresh path is:
 
@@ -16,4 +16,6 @@ The supported refresh path is:
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -r -f -apps user
 ```
 
-Before executing the refresh, the action checks `lsregister -h` when possible and verifies that the required options (`-r`, `-f`, `-apps`) are advertised. If they are not available, the action fails clearly and directs the operator to the manual reinstall or trace fallback branch instead of retrying obsolete or destructive options.
+Preflight is intentionally conservative and local: it validates that the action is still wired to exactly the supported command form above and that no removed or destructive options (`-kill`, `-delete`, `-u`) are present. It must not depend on brittle `lsregister -h` output, because supported macOS versions may fail or localize help output differently.
+
+If the executable exists and the command form is safe, the repair should attempt the supported refresh. Any macOS-level option rejection from that execution is then reported with stderr plus fallback guidance instead of blocking before execution.
