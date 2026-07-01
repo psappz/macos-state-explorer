@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 import platform
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from macos_state_explorer.core.model import Snapshot
+from macos_state_explorer.diagnostics.framework import build_support_bundle
 from macos_state_explorer.diagnostics.local_network.verification import LocalNetworkVerification, verify_local_network
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 
@@ -122,25 +121,19 @@ def write_local_network_support_bundle(
     branch_id: str,
     trace_path: Path | None = None,
 ) -> Path:
-    bundle_path = bundle_path.expanduser()
-    if bundle_path.exists() and not bundle_path.is_dir():
-        raise ValueError("Bundle path exists and is not a directory")
-    bundle_path.mkdir(parents=True, exist_ok=True)
-
-    _write_json_preserving_order(bundle_path / "report.json", report.to_json_dict())
-    (bundle_path / "report.txt").write_text(report.render_text())
-    _write_json_preserving_order(
-        bundle_path / "command.json",
-        {
+    return build_support_bundle(
+        bundle_path,
+        report_json=report.to_json_dict(),
+        report_text=report.render_text(),
+        command_metadata={
             "command": "mse report local-network --bundle",
             "branch": branch_id,
             "trace": _trace_metadata(trace_path),
             "bundle_schema_version": 1,
         },
+        environment=_environment_summary(),
+        artifact_sources={"trace": trace_path} if trace_path is not None else None,
     )
-    _write_json_preserving_order(bundle_path / "environment.json", _environment_summary())
-    _copy_trace_artifacts(trace_path, bundle_path / "trace")
-    return bundle_path
 
 
 def build_local_network_report(
@@ -191,10 +184,6 @@ def _trace_to_json(trace_analysis: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _write_json_preserving_order(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-
 
 def _environment_summary() -> dict[str, Any]:
     return {
@@ -214,20 +203,6 @@ def _trace_metadata(trace_path: Path | None) -> dict[str, Any]:
         "kind": "directory" if expanded.is_dir() else "file" if expanded.is_file() else "missing",
     }
 
-
-def _copy_trace_artifacts(trace_path: Path | None, destination: Path) -> None:
-    if trace_path is None:
-        return
-    source = trace_path.expanduser()
-    if not source.exists():
-        return
-    destination.mkdir(parents=True, exist_ok=True)
-    if source.is_file():
-        shutil.copyfile(source, destination / source.name)
-        return
-    for item in sorted(source.iterdir(), key=lambda path: path.name):
-        if item.is_file():
-            shutil.copyfile(item, destination / item.name)
 
 
 def _next_actions_to_json(

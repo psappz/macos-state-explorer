@@ -1,20 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 from macos_state_explorer.core.model import Snapshot
+from macos_state_explorer.diagnostics.framework import DiagnosticEvidence
 
-
-@dataclass(frozen=True)
-class LocalNetworkEvidence:
-    id: str
-    title: str
-    detail: str
-    source: str
-    present: bool = True
-    confidence: float = 0.8
-    provenance: list[str] = field(default_factory=list)
+LocalNetworkEvidence = DiagnosticEvidence
 
 
 def collect_local_network_evidence(
