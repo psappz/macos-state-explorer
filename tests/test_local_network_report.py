@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -181,5 +182,83 @@ def test_report_cli_json_output_is_parseable_and_uses_contract(monkeypatch):
     assert payload["verification"]["status"] == "FAILED"
 
 
+def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_path):
+    trace_dir = _write_trace_fixture(tmp_path / "trace")
+    bundle_dir = tmp_path / "support-bundle"
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "report",
+            "local-network",
+            "--branch",
+            "manual-empty-trash-reboot",
+            "--trace",
+            str(trace_dir),
+            "--bundle",
+            str(bundle_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.startswith("Local Network diagnostic report")
+    assert _relative_files(bundle_dir) == [
+        "command.json",
+        "environment.json",
+        "report.json",
+        "report.txt",
+        "trace/analysis.json",
+        "trace/log_stream.txt",
+    ]
+    report_json = json.loads((bundle_dir / "report.json").read_text())
+    assert report_json["command"] == "report local-network"
+    assert report_json["trace"]["available"] is True
+    assert (bundle_dir / "report.txt").read_text().startswith("Local Network diagnostic report")
+    command_json = json.loads((bundle_dir / "command.json").read_text())
+    assert list(command_json) == ["command", "branch", "trace", "bundle_schema_version"]
+    assert command_json["branch"] == "manual-empty-trash-reboot"
+    environment_json = json.loads((bundle_dir / "environment.json").read_text())
+    assert list(environment_json) == ["python_version", "platform", "system", "machine"]
+
+
+def test_report_bundle_without_trace_records_no_trace_artifacts(monkeypatch, tmp_path):
+    bundle_dir = tmp_path / "support-bundle"
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["report", "local-network", "--bundle", str(bundle_dir)])
+
+    assert result.exit_code == 0
+    assert _relative_files(bundle_dir) == ["command.json", "environment.json", "report.json", "report.txt"]
+    report_json = json.loads((bundle_dir / "report.json").read_text())
+    assert report_json["trace"]["available"] is False
+
+
+def test_report_bundle_rejects_file_path_without_writing(monkeypatch, tmp_path):
+    bundle_path = tmp_path / "bundle-file"
+    bundle_path.write_text("not a directory")
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["report", "local-network", "--bundle", str(bundle_path)])
+
+    assert result.exit_code != 0
+    assert "Bundle path exists and is not a directory" in result.stdout
+    assert bundle_path.read_text() == "not a directory"
+
+
 def _assert_required_key_prefix(payload: dict[str, object], required_keys: list[str]) -> None:
     assert list(payload)[: len(required_keys)] == required_keys
+
+
+def _write_trace_fixture(trace_dir: Path) -> Path:
+    trace_dir.mkdir()
+    (trace_dir / "analysis.json").write_text(json.dumps(_trace_analysis()))
+    (trace_dir / "log_stream.txt").write_text("lsd com.google.Chrome.code_sign_clone\n")
+    return trace_dir
+
+
+def _relative_files(root: Path) -> list[str]:
+    return sorted(str(path.relative_to(root)) for path in root.rglob("*") if path.is_file())
