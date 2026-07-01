@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from macos_state_explorer.core.model import Snapshot
 from macos_state_explorer.diagnostics.local_network.engine import diagnose_local_network
+from macos_state_explorer.diagnostics.local_network.evidence import collect_local_network_evidence
 from macos_state_explorer.diagnostics.local_network.models import LocalNetworkDiagnosis
 from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.evidence.models import EvidenceItem
@@ -41,6 +42,7 @@ def verify_local_network(
     snapshot: Snapshot,
     *,
     expected_branch_id: str = "manual-empty-trash-reboot",
+    trace_analysis: dict[str, Any] | None = None,
 ) -> LocalNetworkVerification:
     """Evaluate whether the expected Local Network repair branch worked.
 
@@ -49,9 +51,34 @@ def verify_local_network(
     """
     diagnosis = diagnose_local_network(snapshot)
     evidence = extract_evidence(snapshot)
-    solution = build_local_network_solution(snapshot)
+    solution = build_local_network_solution(snapshot, trace_analysis=trace_analysis)
+    solver_evidence = collect_local_network_evidence(snapshot, trace_analysis=trace_analysis)
+    solver_evidence_by_id = {item.id: item for item in solver_evidence}
     candidates = solution.repair_plan
     current_index = _candidate_index(candidates, expected_branch_id)
+
+    if expected_branch_id == "trace-local-network" and trace_analysis:
+        next_candidate = candidates[0] if candidates and candidates[0].id != "trace-local-network" else None
+        trace_evidence_ids = [
+            evidence_id
+            for evidence_id in ("LN-E004", "LN-E005", "LN-E006", "LN-E009")
+            if solver_evidence_by_id.get(evidence_id) and solver_evidence_by_id[evidence_id].present
+        ]
+        if next_candidate:
+            return LocalNetworkVerification(
+                status="FAILED",
+                branch_id=expected_branch_id,
+                expected_change="Trace evidence should identify a more specific root cause or next repair candidate.",
+                observed_result="Trace evidence produced a stronger evidence-ranked repair candidate than another trace capture.",
+                current_diagnosis=diagnosis,
+                next_repair_candidate=next_candidate,
+                continues_workflow=True,
+                evidence_ids=trace_evidence_ids,
+                transition="advance",
+                next_step=_next_step(next_candidate),
+                retry_guidance="Retry the trace branch only if the trace was captured without opening the Local Network settings pane.",
+                fallback_guidance=_fallback_guidance(next_candidate),
+            )
 
     if expected_branch_id not in _known_branch_ids(candidates) and expected_branch_id not in MANUAL_LAUNCHSERVICES_BRANCHES:
         next_candidate = candidates[0] if candidates else None
