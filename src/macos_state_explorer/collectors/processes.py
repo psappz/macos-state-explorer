@@ -13,7 +13,7 @@ class ProcessesCollector(Collector):
             "launchctl_user": run_shell(f"launchctl print gui/$(id -u) 2>/dev/null | grep -Ei -A3 -B3 '{pattern}' || true"),
             "launchctl_system": run_shell(f"launchctl print system 2>/dev/null | grep -Ei -A3 -B3 '{pattern}' || true"),
             "lsof": run_shell(
-                f"sudo lsof -nP 2>/dev/null | grep -Ei '{pattern}|TCC|REG|LaunchServices|Privacy|privacy|Chrome|Google|\.db|\.sqlite|\.plist' || true",
+		f"sudo lsof -nP 2>/dev/null | grep -Ei '{pattern}|TCC|REG|LaunchServices|Privacy|privacy|Chrome|Google|\\.db|\\.sqlite|\\.plist' || true",
                 timeout=180,
             ),
         }
