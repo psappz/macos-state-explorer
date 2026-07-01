@@ -18,6 +18,7 @@ from macos_state_explorer.experiments.local_network import experiment_local_netw
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
 from macos_state_explorer.reports.launchservices_html import write_launchservices_html
+from macos_state_explorer.reports.local_network import build_local_network_report
 from macos_state_explorer.solver.local_network import build_local_network_solution, load_trace_analysis
 from macos_state_explorer.tracers.local_network import trace_json_payload, trace_local_network
 
@@ -27,11 +28,13 @@ experiment_app = typer.Typer(no_args_is_help=True)
 diagnose_app = typer.Typer(no_args_is_help=True)
 solve_app = typer.Typer(no_args_is_help=True)
 verify_app = typer.Typer(no_args_is_help=True)
+report_app = typer.Typer(no_args_is_help=True)
 app.add_typer(trace_app, name="trace")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(diagnose_app, name="diagnose")
 app.add_typer(solve_app, name="solve")
 app.add_typer(verify_app, name="verify")
+app.add_typer(report_app, name="report")
 console = Console()
 
 
@@ -106,6 +109,20 @@ def verify_local_network_cmd(
         typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
     else:
         console.print(render_verification_report(result), markup=False)
+
+
+@report_app.command("local-network")
+def report_local_network_cmd(
+    branch: str = "manual-empty-trash-reboot",
+    trace: Path | None = None,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
+    snap = create_snapshot(fast=True)
+    report = build_local_network_report(snap, trace_analysis=load_trace_analysis(trace), branch_id=branch)
+    if json_output:
+        typer.echo(json_module.dumps(report.to_json_dict(), sort_keys=False))
+    else:
+        console.print(report.render_text(), markup=False)
 
 
 @app.command()
