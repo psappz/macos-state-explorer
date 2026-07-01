@@ -207,6 +207,7 @@ def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_p
     assert _relative_files(bundle_dir) == [
         "command.json",
         "environment.json",
+        "launchservices-analysis.json",
         "report.json",
         "report.txt",
         "trace/analysis.json",
@@ -231,7 +232,13 @@ def test_report_bundle_without_trace_records_no_trace_artifacts(monkeypatch, tmp
     result = runner.invoke(app, ["report", "local-network", "--bundle", str(bundle_dir)])
 
     assert result.exit_code == 0
-    assert _relative_files(bundle_dir) == ["command.json", "environment.json", "report.json", "report.txt"]
+    assert _relative_files(bundle_dir) == [
+        "command.json",
+        "environment.json",
+        "launchservices-analysis.json",
+        "report.json",
+        "report.txt",
+    ]
     report_json = json.loads((bundle_dir / "report.json").read_text())
     assert report_json["trace"]["available"] is False
 
