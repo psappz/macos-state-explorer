@@ -15,7 +15,7 @@ from macos_state_explorer.experiments.local_network import experiment_local_netw
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
 from macos_state_explorer.reports.launchservices_html import write_launchservices_html
-from macos_state_explorer.solver.local_network import build_local_network_solution
+from macos_state_explorer.solver.local_network import build_local_network_solution, load_trace_analysis
 from macos_state_explorer.tracers.local_network import trace_local_network
 
 app = typer.Typer(no_args_is_help=True)
@@ -70,16 +70,16 @@ def diagnose_local_network_cmd():
 
 
 @solve_app.command("local-network")
-def solve_local_network_cmd():
+def solve_local_network_cmd(trace: Path | None = None):
     snap = create_snapshot(fast=True)
-    solution = build_local_network_solution(snap)
+    solution = build_local_network_solution(snap, trace_analysis=load_trace_analysis(trace))
     console.print(solution.render_text(), markup=False)
 
 
 @verify_app.command("local-network")
-def verify_local_network_cmd(branch: str = "manual-empty-trash-reboot"):
+def verify_local_network_cmd(branch: str = "manual-empty-trash-reboot", trace: Path | None = None):
     snap = create_snapshot(fast=True)
-    result = verify_local_network(snap, expected_branch_id=branch)
+    result = verify_local_network(snap, expected_branch_id=branch, trace_analysis=load_trace_analysis(trace))
     console.print(render_verification_report(result), markup=False)
 
 
