@@ -18,5 +18,5 @@ System Settings
 Run:
 
 ```bash
-mse trace local-network --out ~/Desktop/mse-trace
+mse trace local-network ~/Desktop/mse-trace
 ```

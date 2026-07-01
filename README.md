@@ -22,7 +22,7 @@ python -m pip install -e ".[dev]"
 mse --help
 mse collect ~/Desktop/mse-fast --fast-report
 mse launchservices ~/Desktop/mse-ls
-mse trace local-network --out ~/Desktop/mse-local-network-trace
+mse trace local-network ~/Desktop/mse-local-network-trace
 mse experiment local-network --out ~/Desktop/mse-local-network-experiment
 mse doctor
 ```

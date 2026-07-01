@@ -120,10 +120,22 @@ def solve_launchservices_cmd(
 def verify_local_network_cmd(
     branch: str = "manual-empty-trash-reboot",
     trace: Path | None = None,
+    failed_branch: list[str] | None = typer.Option(
+        None,
+        "--failed-branch",
+        help="Branch/action id that already failed in this workflow; may be repeated.",
+    ),
+    audit_log: Path | None = typer.Option(None, "--audit-log", help="Read failed branch/action ids from a repair audit JSONL log."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ):
     snap = create_snapshot(fast=True)
-    result = verify_local_network(snap, expected_branch_id=branch, trace_analysis=load_trace_analysis(trace))
+    failed_branches = set(failed_branch or []) | _failed_branches_from_repair_audit(audit_log)
+    result = verify_local_network(
+        snap,
+        expected_branch_id=branch,
+        trace_analysis=load_trace_analysis(trace),
+        failed_branches=failed_branches,
+    )
     if json_output:
         typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
     else:
@@ -181,6 +193,39 @@ def _local_network_module_with_repair_verifier():
     return replace(LOCAL_NETWORK_MODULE, repair_verifier=_verify_local_network_repair_step)
 
 
+def _failed_branches_from_repair_audit(audit_log: Path | None) -> set[str]:
+    if audit_log is None:
+        return set()
+    expanded = audit_log.expanduser()
+    if not expanded.exists():
+        return set()
+    failed: set[str] = set()
+    for line in expanded.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json_module.loads(line)
+        except json_module.JSONDecodeError:
+            continue
+        result = event.get("result", {}) if isinstance(event, dict) else {}
+        for step in result.get("step_results", []) if isinstance(result, dict) else []:
+            if not isinstance(step, dict):
+                continue
+            verification = step.get("verification")
+            repair_result = step.get("repair_result")
+            if isinstance(verification, dict) and verification.get("status") == "FAILED":
+                action_id = step.get("action_id")
+                if isinstance(action_id, str) and action_id:
+                    failed.add(action_id)
+                elif isinstance(step.get("candidate_id"), str):
+                    failed.add(step["candidate_id"])
+            elif isinstance(repair_result, dict) and repair_result.get("status") == "FAILED":
+                action_id = repair_result.get("action_id") or step.get("action_id")
+                if isinstance(action_id, str) and action_id:
+                    failed.add(action_id)
+    return failed
+
+
 def _verify_local_network_repair_step(snapshot, candidate, context=None) -> RepairVerification:
     context = context or {}
     trace_analysis = context.get("trace_analysis")
@@ -188,6 +233,7 @@ def _verify_local_network_repair_step(snapshot, candidate, context=None) -> Repa
         snapshot,
         expected_branch_id=candidate.id,
         trace_analysis=trace_analysis if isinstance(trace_analysis, dict) else None,
+        failed_branches=set(context.get("failed_branches", [])),
     )
     return RepairVerification(
         status=verification.status,

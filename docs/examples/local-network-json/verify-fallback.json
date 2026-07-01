@@ -55,7 +55,7 @@
         "risk": "low",
         "mode": "read-only",
         "commands": [
-          "mse trace local-network --out ~/Desktop/mse-local-network-trace"
+          "mse trace local-network ~/Desktop/mse-local-network-trace"
         ],
         "expected_result": "Trace artifacts show whether the app reaches APIs that should trigger Local Network privacy."
       }
