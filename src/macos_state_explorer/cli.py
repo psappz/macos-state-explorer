@@ -142,13 +142,14 @@ def repair_local_network_cmd(
 ):
     snap = create_snapshot(fast=True)
     context = {"trace_analysis": load_trace_analysis(trace)}
+    effective_dry_run = False if confirm else dry_run
     engine = FrameworkDiagnosticEngine(_local_network_module_with_repair_verifier())
     if action is not None or branch is not None:
         result = engine.repair(
             snap,
             action_id=action,
             candidate_id=branch,
-            dry_run=dry_run,
+            dry_run=effective_dry_run,
             confirmed=confirm,
             audit_log=audit_log,
             context=context,
@@ -162,7 +163,7 @@ def repair_local_network_cmd(
         return
     plan_result = engine.repair_plan(
         snap,
-        dry_run=dry_run,
+        dry_run=effective_dry_run,
         confirmed=confirm,
         audit_log=audit_log,
         context=context,
