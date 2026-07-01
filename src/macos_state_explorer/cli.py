@@ -18,7 +18,8 @@ from macos_state_explorer.diagnostics.local_network.renderer import render_termi
 from macos_state_explorer.diagnostics.local_network.verification import render_verification_report, verify_local_network
 from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
-from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, render_launchservices_analysis
+from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, analysis_records_from_snapshot_payload, render_launchservices_analysis
+from macos_state_explorer.launchservices.generations import analyze_generations, render_generation_summary
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
 from macos_state_explorer.reports.launchservices import build_launchservices_report, write_launchservices_support_bundle
@@ -58,10 +59,18 @@ def launchservices(
     ctx: typer.Context,
     out: Path = typer.Argument(..., help="Output directory, or 'analyze' for root-cause analysis."),
 ):
-    if str(out) == "analyze":
+    if str(out) in {"analyze", "generations"}:
         snap = create_snapshot(fast=True)
         payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
-        analysis = analysis_from_snapshot_payload(payload if isinstance(payload, dict) else {})
+        payload = payload if isinstance(payload, dict) else {}
+        if str(out) == "generations":
+            generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
+            if "--json" in ctx.args:
+                typer.echo(json_module.dumps(generations.to_json_dict(), sort_keys=False))
+            else:
+                console.print(render_generation_summary(generations), markup=False)
+            return
+        analysis = analysis_from_snapshot_payload(payload)
         if "--json" in ctx.args:
             typer.echo(json_module.dumps(analysis.to_json_dict(), sort_keys=False))
         else:

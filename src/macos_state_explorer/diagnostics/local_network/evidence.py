@@ -5,6 +5,7 @@ from typing import Any
 from macos_state_explorer.core.model import Snapshot
 from macos_state_explorer.diagnostics.framework import DiagnosticEvidence
 from macos_state_explorer.launchservices.analysis import analyze_launchservices, summarize_root_causes
+from macos_state_explorer.launchservices.generations import analyze_generations, summarize_chromium_generations_for_local_network
 
 LocalNetworkEvidence = DiagnosticEvidence
 
@@ -22,12 +23,13 @@ def collect_local_network_evidence(
     tcc_hits = _tcc_term_hits(tcc, ["ktccservicelocalnetwork", "localnetwork"])
     has_localnetwork_rows = bool(direct_ln.strip() or tcc_hits)
 
-    stale_entries = launchservices.get("stale_entries", []) or _stale_entries_from_records(
-        launchservices.get("entries", []) or []
-    )
+    all_entries = launchservices.get("entries", []) or []
+    stale_entries = launchservices.get("stale_entries", []) or _stale_entries_from_records(all_entries)
     stale_count = len(stale_entries)
     launchservices_analysis = analyze_launchservices(stale_entries)
     root_cause_summary = summarize_root_causes(launchservices_analysis)
+    generation_analysis = analyze_generations(all_entries or stale_entries)
+    generation_detail = summarize_chromium_generations_for_local_network(generation_analysis)
     stale_blob = str(stale_entries).lower()
     stale_chrome_entries = [entry for entry in stale_entries if _mentions_chrome_or_google(entry)]
     trash_chrome_entries = [entry for entry in stale_chrome_entries if _is_trash_path(entry)]
@@ -58,7 +60,7 @@ def collect_local_network_evidence(
             id="LN-E002",
             title="LaunchServices has stale/orphaned Chrome or Google registrations",
             detail=(
-                f"{stale_count} stale LaunchServices registrations were reported.\n{root_cause_summary}"
+                f"Chromium-family LaunchServices generations were reported.\n{generation_detail}\n{root_cause_summary}"
                 if stale_count
                 else "No stale LaunchServices registrations were reported."
             ),
