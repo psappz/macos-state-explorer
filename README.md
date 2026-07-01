@@ -20,8 +20,8 @@ python -m pip install -e ".[dev]"
 
 ```bash
 mse --help
-mse collect --fast --out ~/Desktop/mse-fast-report
-mse launchservices --out ~/Desktop/mse-ls
+mse collect ~/Desktop/mse-fast --fast-report
+mse launchservices ~/Desktop/mse-ls
 mse trace local-network --out ~/Desktop/mse-local-network-trace
 mse experiment local-network --out ~/Desktop/mse-local-network-experiment
 mse doctor

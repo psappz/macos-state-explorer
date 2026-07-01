@@ -47,9 +47,6 @@ def run_shell(command: str, timeout: int = 120) -> dict[str, Any]:
     )
 
 
-def host() -> str:
-    return socket.gethostname()
-
 
 def safe_convert(obj: Any) -> Any:
     """

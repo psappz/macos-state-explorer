@@ -9,6 +9,7 @@ from macos_state_explorer.core.snapshot import create_snapshot
 from macos_state_explorer.core.util import write_json
 from macos_state_explorer.experiments.local_network import experiment_local_network
 from macos_state_explorer.reports.html import write_report
+from macos_state_explorer.reports.launchservices_html import write_launchservices_html
 from macos_state_explorer.tracers.local_network import trace_local_network
 
 app = typer.Typer(no_args_is_help=True)
@@ -32,6 +33,7 @@ def launchservices(out: Path):
     out.mkdir(parents=True, exist_ok=True)
     obs = LaunchServicesCollector().collect()
     write_json(out / "launchservices.json", obs)
+    write_launchservices_html(out, obs.payload)
     stale = obs.payload.get("stale_entries", [])
     write_json(out / "stale-launchservices.json", stale)
     console.print(f"[green]LaunchServices output:[/green] {out}")
