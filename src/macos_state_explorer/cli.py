@@ -129,7 +129,8 @@ def verify_local_network_cmd(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ):
     snap = create_snapshot(fast=True)
-    failed_branches = set(failed_branch or []) | _failed_branches_from_repair_audit(audit_log)
+    audit_failed_branches, _audit_failed_actions = _failed_history_from_repair_audit(audit_log)
+    failed_branches = set(failed_branch or []) | audit_failed_branches
     result = verify_local_network(
         snap,
         expected_branch_id=branch,
@@ -193,13 +194,14 @@ def _local_network_module_with_repair_verifier():
     return replace(LOCAL_NETWORK_MODULE, repair_verifier=_verify_local_network_repair_step)
 
 
-def _failed_branches_from_repair_audit(audit_log: Path | None) -> set[str]:
+def _failed_history_from_repair_audit(audit_log: Path | None) -> tuple[set[str], set[str]]:
     if audit_log is None:
-        return set()
+        return set(), set()
     expanded = audit_log.expanduser()
     if not expanded.exists():
-        return set()
-    failed: set[str] = set()
+        return set(), set()
+    failed_candidates: set[str] = set()
+    failed_actions: set[str] = set()
     for line in expanded.read_text().splitlines():
         if not line.strip():
             continue
@@ -207,23 +209,43 @@ def _failed_branches_from_repair_audit(audit_log: Path | None) -> set[str]:
             event = json_module.loads(line)
         except json_module.JSONDecodeError:
             continue
-        result = event.get("result", {}) if isinstance(event, dict) else {}
-        for step in result.get("step_results", []) if isinstance(result, dict) else []:
+        if not isinstance(event, dict):
+            continue
+        result = event.get("result", {})
+        selected_action = event.get("selected_action", {})
+        if isinstance(result, dict) and result.get("status") == "FAILED":
+            _record_failed_candidate_id(result.get("candidate_id"), failed_candidates)
+            if isinstance(selected_action, dict):
+                _record_failed_candidate_id(selected_action.get("candidate_id"), failed_candidates)
+            _record_failed_action_id(result.get("action_id"), failed_actions)
+        if not isinstance(result, dict):
+            continue
+        for step in result.get("step_results", []):
             if not isinstance(step, dict):
                 continue
             verification = step.get("verification")
             repair_result = step.get("repair_result")
-            if isinstance(verification, dict) and verification.get("status") == "FAILED":
-                action_id = step.get("action_id")
-                if isinstance(action_id, str) and action_id:
-                    failed.add(action_id)
-                elif isinstance(step.get("candidate_id"), str):
-                    failed.add(step["candidate_id"])
-            elif isinstance(repair_result, dict) and repair_result.get("status") == "FAILED":
-                action_id = repair_result.get("action_id") or step.get("action_id")
-                if isinstance(action_id, str) and action_id:
-                    failed.add(action_id)
-    return failed
+            step_failed = step.get("status") == "FAILED"
+            verification_failed = isinstance(verification, dict) and verification.get("status") == "FAILED"
+            repair_failed = isinstance(repair_result, dict) and repair_result.get("status") == "FAILED"
+            if step_failed or verification_failed or repair_failed:
+                _record_failed_candidate_id(step.get("candidate_id"), failed_candidates)
+                if isinstance(repair_result, dict):
+                    _record_failed_candidate_id(repair_result.get("candidate_id"), failed_candidates)
+                _record_failed_action_id(step.get("action_id"), failed_actions)
+                if isinstance(repair_result, dict):
+                    _record_failed_action_id(repair_result.get("action_id"), failed_actions)
+    return failed_candidates, failed_actions
+
+
+def _record_failed_candidate_id(value: object, failed_candidates: set[str]) -> None:
+    if isinstance(value, str) and value:
+        failed_candidates.add(value)
+
+
+def _record_failed_action_id(value: object, failed_actions: set[str]) -> None:
+    if isinstance(value, str) and value:
+        failed_actions.add(value)
 
 
 def _verify_local_network_repair_step(snapshot, candidate, context=None) -> RepairVerification:

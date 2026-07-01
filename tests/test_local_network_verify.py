@@ -249,6 +249,145 @@ def test_verify_cli_audit_history_prevents_trace_loop(monkeypatch, tmp_path):
     assert "manual-empty-trash-reboot" in payload["observed_result"]
 
 
+def test_verify_cli_failed_branch_excludes_manual_empty_trash_after_trace(monkeypatch, tmp_path):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast: snapshot(entries=[launchservices_entry()]))
+    monkeypatch.setattr("macos_state_explorer.cli.load_trace_analysis", lambda trace: trace_ui_correlation())
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            "local-network",
+            "--branch",
+            "trace-local-network",
+            "--trace",
+            str(tmp_path / "trace"),
+            "--failed-branch",
+            "manual-empty-trash-reboot",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["next_repair_candidate"]["id"] == "manual-reinstall-chrome"
+    assert "manual-empty-trash-reboot" in payload["observed_result"]
+
+
+def test_verify_cli_repeated_failed_branch_reports_no_safe_repair(monkeypatch, tmp_path):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast: snapshot(entries=[launchservices_entry()]))
+    monkeypatch.setattr("macos_state_explorer.cli.load_trace_analysis", lambda trace: trace_ui_correlation())
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            "local-network",
+            "--branch",
+            "trace-local-network",
+            "--trace",
+            str(tmp_path / "trace"),
+            "--failed-branch",
+            "manual-empty-trash-reboot",
+            "--failed-branch",
+            "manual-reinstall-chrome",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["next_repair_candidate"] is None
+    assert "no safe automatic repair remains" in payload["next_action"]["step"]
+    assert "support bundle" in payload["fallback_guidance"]
+
+
+def test_audit_candidate_id_extraction_excludes_failed_manual_only_branch(monkeypatch, tmp_path):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast: snapshot(entries=[launchservices_entry()]))
+    monkeypatch.setattr("macos_state_explorer.cli.load_trace_analysis", lambda trace: trace_ui_correlation())
+    audit_log = tmp_path / "repair-audit.jsonl"
+    audit_log.write_text(
+        json.dumps(
+            {
+                "result": {
+                    "step_results": [
+                        {
+                            "candidate_id": "manual-empty-trash-reboot",
+                            "action_id": None,
+                            "status": "FAILED",
+                            "verification": {"status": "FAILED"},
+                        }
+                    ]
+                }
+            }
+        )
+        + "\n"
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            "local-network",
+            "--branch",
+            "trace-local-network",
+            "--trace",
+            str(tmp_path / "trace"),
+            "--audit-log",
+            str(audit_log),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["next_repair_candidate"]["id"] == "manual-reinstall-chrome"
+    assert "manual-empty-trash-reboot" in payload["observed_result"]
+
+
+def test_action_id_only_audit_failure_does_not_pollute_failed_branch_wording(monkeypatch, tmp_path):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast: snapshot(entries=[launchservices_entry()]))
+    monkeypatch.setattr("macos_state_explorer.cli.load_trace_analysis", lambda trace: trace_ui_correlation())
+    audit_log = tmp_path / "repair-audit.jsonl"
+    audit_log.write_text(
+        json.dumps(
+            {
+                "result": {
+                    "step_results": [
+                        {
+                            "candidate_id": None,
+                            "action_id": "refresh-launchservices-user-cache",
+                            "status": "FAILED",
+                            "repair_result": {"status": "FAILED", "action_id": "refresh-launchservices-user-cache"},
+                        }
+                    ]
+                }
+            }
+        )
+        + "\n"
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            "local-network",
+            "--branch",
+            "trace-local-network",
+            "--trace",
+            str(tmp_path / "trace"),
+            "--audit-log",
+            str(audit_log),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert "refresh-launchservices-user-cache" not in payload["observed_result"]
+    assert "Previously failed workflow branches" not in payload["observed_result"]
+
+
 def test_verify_local_network_cli_success_has_no_next_branch(monkeypatch):
     monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast: snapshot(entries=[]))
 

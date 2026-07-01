@@ -852,10 +852,7 @@ class FrameworkDiagnosticEngine:
                 )
                 return _finalize_repair_plan_result(result, audit_log)
             if verification and verification.status == "FAILED":
-                if step.action is None:
-                    failed_repair_branches.add(step.candidate_id)
-                if step.action_id:
-                    failed_repair_branches.add(step.action_id)
+                failed_repair_branches.add(step.candidate_id)
             if verification and verification.status not in {"FAILED"}:
                 result = RepairPlanResult(
                     module=self._module.id,
