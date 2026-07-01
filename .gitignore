@@ -16,3 +16,7 @@ mse-*/
 !src/macos_state_explorer/reports/*.py
 *trace*/
 *.log
+
+# source packages named tracers must be tracked
+!src/macos_state_explorer/tracers/
+!src/macos_state_explorer/tracers/*.py
