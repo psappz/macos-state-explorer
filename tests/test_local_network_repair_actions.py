@@ -39,6 +39,30 @@ def _snapshot() -> Snapshot:
     )
 
 
+def _clean_snapshot() -> Snapshot:
+    return Snapshot(
+        host="local-network-repair-host-clean",
+        observations=[
+            Observation(
+                collector="tcc",
+                started_at=1,
+                ended_at=2,
+                payload={"direct_localnetwork_query": {"stdout": ""}, "user_tcc": {"hits": []}},
+            ),
+            Observation(
+                collector="launchservices",
+                started_at=1,
+                ended_at=2,
+                payload={
+                    "stale_entries": [],
+                    "entries": [],
+                    "candidate_files": {"stdout": "/System/Library/LaunchServices/com.apple.LaunchServices.csstore\n"},
+                },
+            ),
+        ],
+    )
+
+
 def test_local_network_candidates_can_expose_optional_repair_actions_without_json_contract_drift():
     solution = build_local_network_solution(_snapshot())
 
@@ -64,7 +88,7 @@ def test_repair_local_network_dry_run_json_uses_ranked_repair_plan(monkeypatch):
     monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
     runner = CliRunner()
 
-    result = runner.invoke(app, ["repair", "local-network", "--dry-run", "--json"])
+    result = runner.invoke(app, ["repair", "local-network", "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
@@ -89,6 +113,55 @@ def test_repair_local_network_dry_run_json_uses_ranked_repair_plan(monkeypatch):
     assert payload["plan"]["steps"][0]["action_id"] == "refresh-launchservices-user-cache"
     assert payload["step_results"][0]["status"] == "DRY_RUN"
     assert payload["step_results"][0]["repair_result"]["executed_commands"][0]["exit_code"] is None
+
+
+def test_repair_local_network_confirm_executes_plan_and_verifies(monkeypatch):
+    executed: list[list[str]] = []
+    snapshots = iter([_snapshot(), _clean_snapshot()])
+
+    def fake_runner(command: list[str]) -> tuple[int, str, str]:
+        executed.append(command)
+        return 0, "ok", ""
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: next(snapshots))
+    monkeypatch.setattr("macos_state_explorer.diagnostics.framework.default_command_runner", fake_runner)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["repair", "local-network", "--confirm", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "SUCCESS"
+    assert payload["dry_run"] is False
+    assert payload["confirmed"] is True
+    assert executed == [
+        ["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-kill", "-r", "-domain", "user"]
+    ]
+    executed_step = next(step for step in payload["step_results"] if step["repair_result"])
+    assert executed_step["repair_result"]["status"] != "DRY_RUN"
+    assert executed_step["repair_result"]["dry_run"] is False
+    assert executed_step["verification"]["status"] == "SUCCESS"
+
+
+def test_repair_local_network_confirmed_execution_never_reports_dry_run_status(monkeypatch):
+    executed: list[list[str]] = []
+    snapshots = iter([_snapshot(), _clean_snapshot()])
+
+    def fake_runner(command: list[str]) -> tuple[int, str, str]:
+        executed.append(command)
+        return 0, "ok", ""
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: next(snapshots))
+    monkeypatch.setattr("macos_state_explorer.diagnostics.framework.default_command_runner", fake_runner)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["repair", "local-network", "--confirm", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    executed_results = [step["repair_result"] for step in payload["step_results"] if step["repair_result"]]
+    assert executed_results
+    assert all(repair_result["status"] != "DRY_RUN" for repair_result in executed_results)
 
 
 def test_repair_local_network_explicit_action_preserves_single_action_json(monkeypatch):
