@@ -89,21 +89,20 @@ def verify_local_network(
             for evidence_id in ("LN-E004", "LN-E005", "LN-E006", "LN-E009")
             if solver_evidence_by_id.get(evidence_id) and solver_evidence_by_id[evidence_id].present
         ]
-        if next_candidate:
-            return LocalNetworkVerification(
-                status="FAILED",
-                branch_id=expected_branch_id,
-                expected_change="Trace evidence should identify a more specific root cause or next repair candidate.",
-                observed_result=_trace_observed_result(failed_branches),
-                current_diagnosis=diagnosis,
-                next_repair_candidate=next_candidate,
-                continues_workflow=True,
-                evidence_ids=trace_evidence_ids,
-                transition="advance",
-                next_step=_next_step(next_candidate),
-                retry_guidance="Retry the trace branch only if the trace was captured without opening the Local Network settings pane.",
-                fallback_guidance=_fallback_guidance(next_candidate),
-            )
+        return LocalNetworkVerification(
+            status="FAILED",
+            branch_id=expected_branch_id,
+            expected_change="Trace evidence should identify a more specific root cause or next repair candidate.",
+            observed_result=_trace_observed_result(failed_branches),
+            current_diagnosis=diagnosis,
+            next_repair_candidate=next_candidate,
+            continues_workflow=next_candidate is not None,
+            evidence_ids=trace_evidence_ids,
+            transition="advance",
+            next_step=_next_step(next_candidate),
+            retry_guidance="Retry the trace branch only if the trace was captured without opening the Local Network settings pane.",
+            fallback_guidance=_fallback_guidance(next_candidate),
+        )
 
     if expected_branch_id not in _known_branch_ids(candidates) and expected_branch_id not in MANUAL_LAUNCHSERVICES_BRANCHES:
         next_candidate = candidates[0] if candidates else None
@@ -292,11 +291,17 @@ def _diagnosis_evidence_ids(diagnosis: LocalNetworkDiagnosis) -> list[str]:
 
 def _next_step(candidate: RepairCandidate | None) -> str:
     if candidate is None:
-        return "No deterministic next repair branch remains in the current evidence-ranked plan."
+        return (
+            "no safe automatic repair remains in the current evidence-ranked plan; collect a support bundle "
+            "and manually inspect stale LaunchServices paths before any higher-risk action."
+        )
     return f"Continue with {candidate.id}: {candidate.title}."
 
 
 def _fallback_guidance(candidate: RepairCandidate | None) -> str:
     if candidate is None:
-        return "If the symptom persists, run mse trace local-network and mse collect before considering any higher-risk manual action."
+        return (
+            "Collect a support bundle with mse collect ~/Desktop/mse-local-network-collect --fast and inspect "
+            "stale LaunchServices paths, trace evidence, and Local Network UI correlation manually."
+        )
     return f"If the next branch does not change the diagnosis, follow its fallback: {candidate.fallback_branch}"
