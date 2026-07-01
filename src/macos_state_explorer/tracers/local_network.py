@@ -80,7 +80,7 @@ def _stop(p: subprocess.Popen) -> None:
         f.close()
 
 
-def trace_local_network(out: Path, seconds: int | None = None) -> None:
+def trace_local_network(out: Path, seconds: int | None = None) -> dict[str, Any]:
     out.mkdir(parents=True, exist_ok=True)
     commands = {
         "log_stream.txt": ["log", "stream", "--style", "compact", "--predicate", PREDICATE],
@@ -104,6 +104,7 @@ def trace_local_network(out: Path, seconds: int | None = None) -> None:
     (out / "analysis.json").write_text(json.dumps(analysis, indent=2, sort_keys=True, default=str))
     (out / "index.html").write_text(render_trace_html(analysis))
     print(f"Report: {out / 'index.html'}")
+    return analysis
 
 
 def analyze_trace(out: Path) -> dict[str, Any]:
@@ -170,6 +171,26 @@ def analyze_trace(out: Path) -> dict[str, Any]:
         "correlation_summary": _correlation_summary(timeline_events),
         "timeline_events": timeline_events,
         "candidate_paths": path_list[:300],
+    }
+
+
+def trace_json_payload(out: Path, analysis: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "command": "trace local-network",
+        "out": str(out),
+        "analysis": {
+            "created_at": analysis.get("created_at"),
+            "keyword_hits": analysis.get("keyword_hits", {}),
+            "signal_counts": analysis.get("signal_counts", {}),
+            "correlation_summary": analysis.get("correlation_summary", []),
+            "timeline_events": analysis.get("timeline_events", []),
+        },
+        "signals": analysis.get("correlation_summary", []),
+        "candidate_paths": analysis.get("candidate_paths", []),
+        "next_action": {
+            "type": "inspect-solve",
+            "command": f"mse solve local-network --trace {out}",
+        },
     }
 
 
