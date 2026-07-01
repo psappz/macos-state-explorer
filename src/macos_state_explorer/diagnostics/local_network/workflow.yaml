@@ -1,0 +1,20 @@
+name: local-network
+description: Focused read-only diagnostic workflow for macOS Local Network privacy state.
+safety:
+  default_mode: read-only
+  forbidden:
+    - cache deletion
+    - TCC reset
+    - process killing
+    - file deletion
+    - sqlite writes
+    - LaunchServices reset operations
+steps:
+  - run_fast_snapshot
+  - extract_evidence
+  - build_remediation_plan
+  - produce_local_network_diagnosis
+  - render_terminal_report
+verification:
+  primary: mse diagnose local-network
+  fallback: mse trace local-network --out ~/Desktop/mse-local-network-trace

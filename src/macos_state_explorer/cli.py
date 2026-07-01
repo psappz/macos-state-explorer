@@ -7,18 +7,22 @@ from rich.console import Console
 from macos_state_explorer.collectors.launchservices import LaunchServicesCollector
 from macos_state_explorer.core.snapshot import create_snapshot
 from macos_state_explorer.core.util import write_json
-from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
 from macos_state_explorer.reports.launchservices_html import write_launchservices_html
 from macos_state_explorer.tracers.local_network import trace_local_network
+from macos_state_explorer.diagnostics.local_network.engine import diagnose_local_network
+from macos_state_explorer.diagnostics.local_network.renderer import render_terminal_report
+from macos_state_explorer.evidence.engine import extract_evidence
 
 app = typer.Typer(no_args_is_help=True)
 trace_app = typer.Typer(no_args_is_help=True)
 experiment_app = typer.Typer(no_args_is_help=True)
+diagnose_app = typer.Typer(no_args_is_help=True)
 app.add_typer(trace_app, name="trace")
 app.add_typer(experiment_app, name="experiment")
+app.add_typer(diagnose_app, name="diagnose")
 console = Console()
 
 
@@ -50,6 +54,13 @@ def trace_local_network_cmd(out: Path, seconds: int | None = None):
 @experiment_app.command("local-network")
 def experiment_local_network_cmd(out: Path):
     experiment_local_network(out.expanduser())
+
+
+@diagnose_app.command("local-network")
+def diagnose_local_network_cmd():
+    snap = create_snapshot(fast=True)
+    diagnosis = diagnose_local_network(snap)
+    console.print(render_terminal_report(diagnosis))
 
 
 @app.command()
