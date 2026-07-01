@@ -12,5 +12,7 @@ build/
 # private/generated analysis outputs
 mse-*/
 *report*/
+!src/macos_state_explorer/reports/
+!src/macos_state_explorer/reports/*.py
 *trace*/
 *.log
