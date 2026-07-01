@@ -10,7 +10,7 @@ from macos_state_explorer.diagnostics.local_network.evidence import collect_loca
 from macos_state_explorer.diagnostics.local_network.models import LocalNetworkDiagnosis
 from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.evidence.models import EvidenceItem
-from macos_state_explorer.solver.local_network import RepairCandidate, build_local_network_solution
+from macos_state_explorer.solver.local_network import RepairCandidate, build_local_network_solution, repair_candidate_to_json
 
 VerificationStatus = Literal["SUCCESS", "FAILED", "RETRY"]
 VerificationTransition = Literal[
@@ -36,6 +36,29 @@ class LocalNetworkVerification(BaseModel):
     next_step: str
     retry_guidance: str
     fallback_guidance: str
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "command": "verify local-network",
+            "status": self.status,
+            "branch_id": self.branch_id,
+            "transition": self.transition,
+            "expected_change": self.expected_change,
+            "observed_result": self.observed_result,
+            "current_diagnosis": self.current_diagnosis.model_dump(),
+            "evidence_ids": list(self.evidence_ids),
+            "continues_workflow": self.continues_workflow,
+            "next_repair_candidate": repair_candidate_to_json(self.next_repair_candidate)
+            if self.next_repair_candidate
+            else None,
+            "next_action": {
+                "type": self.transition,
+                "step": self.next_step,
+                "command": self.next_repair_candidate.verification_command if self.next_repair_candidate else None,
+            },
+            "retry_guidance": self.retry_guidance,
+            "fallback_guidance": self.fallback_guidance,
+        }
 
 
 def verify_local_network(

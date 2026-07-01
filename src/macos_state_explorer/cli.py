@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import redirect_stdout
+import io
+import json as json_module
 import typer
 from rich.console import Console
 
@@ -16,7 +19,7 @@ from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
 from macos_state_explorer.reports.launchservices_html import write_launchservices_html
 from macos_state_explorer.solver.local_network import build_local_network_solution, load_trace_analysis
-from macos_state_explorer.tracers.local_network import trace_local_network
+from macos_state_explorer.tracers.local_network import trace_json_payload, trace_local_network
 
 app = typer.Typer(no_args_is_help=True)
 trace_app = typer.Typer(no_args_is_help=True)
@@ -53,8 +56,17 @@ def launchservices(out: Path):
 
 
 @trace_app.command("local-network")
-def trace_local_network_cmd(out: Path, seconds: int | None = None):
-    trace_local_network(out.expanduser(), seconds=seconds)
+def trace_local_network_cmd(
+    out: Path,
+    seconds: int | None = None,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
+    if json_output:
+        with redirect_stdout(io.StringIO()):
+            analysis = trace_local_network(out.expanduser(), seconds=seconds)
+        typer.echo(json_module.dumps(trace_json_payload(out.expanduser(), analysis), sort_keys=False))
+    else:
+        trace_local_network(out.expanduser(), seconds=seconds)
 
 
 @experiment_app.command("local-network")
@@ -70,17 +82,30 @@ def diagnose_local_network_cmd():
 
 
 @solve_app.command("local-network")
-def solve_local_network_cmd(trace: Path | None = None):
+def solve_local_network_cmd(
+    trace: Path | None = None,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
     snap = create_snapshot(fast=True)
     solution = build_local_network_solution(snap, trace_analysis=load_trace_analysis(trace))
-    console.print(solution.render_text(), markup=False)
+    if json_output:
+        typer.echo(json_module.dumps(solution.to_json_dict(), sort_keys=False))
+    else:
+        console.print(solution.render_text(), markup=False)
 
 
 @verify_app.command("local-network")
-def verify_local_network_cmd(branch: str = "manual-empty-trash-reboot", trace: Path | None = None):
+def verify_local_network_cmd(
+    branch: str = "manual-empty-trash-reboot",
+    trace: Path | None = None,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
     snap = create_snapshot(fast=True)
     result = verify_local_network(snap, expected_branch_id=branch, trace_analysis=load_trace_analysis(trace))
-    console.print(render_verification_report(result), markup=False)
+    if json_output:
+        typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_verification_report(result), markup=False)
 
 
 @app.command()

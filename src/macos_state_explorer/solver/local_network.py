@@ -97,6 +97,16 @@ class LocalNetworkSolution:
         ])
         return "\n".join(lines)
 
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "command": "solve local-network",
+            "diagnosis": self.diagnosis,
+            "evidence": [_evidence_to_json(item) for item in sorted(self.evidence, key=lambda item: item.id)],
+            "matched_rules": [_rule_match_to_json(match) for match in self.rule_matches],
+            "repair_candidates": [repair_candidate_to_json(candidate) for candidate in self.repair_plan],
+            "next_action": repair_candidate_to_json(self.repair_plan[0]),
+        }
+
 
 def build_local_network_solution(snapshot: Snapshot, trace_analysis: dict[str, Any] | None = None) -> LocalNetworkSolution:
     evidence = collect_local_network_evidence(snapshot, trace_analysis=trace_analysis)
@@ -164,6 +174,44 @@ def _candidate_order_from_rules(rule_matches: list[RuleMatch]) -> list[str]:
             if recommendation not in order:
                 order.append(recommendation)
     return order
+
+
+def _evidence_to_json(evidence: SolverEvidence) -> dict[str, Any]:
+    return {
+        "id": evidence.id,
+        "title": evidence.title,
+        "detail": evidence.detail,
+        "source": evidence.source,
+        "present": evidence.present,
+        "confidence": round(evidence.confidence, 4),
+        "provenance": list(evidence.provenance),
+    }
+
+
+def _rule_match_to_json(match: RuleMatch) -> dict[str, Any]:
+    return {
+        "id": match.rule_id,
+        "diagnosis_id": match.diagnosis_id,
+        "matched_required_evidence": list(match.matched_required_evidence),
+        "matched_optional_evidence": list(match.matched_optional_evidence),
+        "matched_conflicting_evidence": list(match.matched_conflicting_evidence),
+        "confidence_contribution": match.confidence_contribution,
+        "repair_recommendations": list(match.repair_recommendations),
+        "explanation": match.explanation,
+    }
+
+
+def repair_candidate_to_json(candidate: RepairCandidate) -> dict[str, Any]:
+    return {
+        "id": candidate.id,
+        "title": candidate.title,
+        "risk": candidate.risk,
+        "manual_action": candidate.manual_action,
+        "expected_result": candidate.expected_result,
+        "verification_command": candidate.verification_command,
+        "fallback_branch": candidate.fallback_branch,
+        "evidence_ids": list(candidate.evidence_ids),
+    }
 
 
 def _diagnosis_from_rules(rule_matches: list[RuleMatch], *, present: Any) -> str:
