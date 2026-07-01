@@ -78,6 +78,59 @@ def test_solver_uses_evidence_ids():
     assert "Evidence:" in solution.render_text()
 
 
+def _snapshot_with_non_trash_stale_chrome() -> Snapshot:
+    snap = _snapshot_with_known_evidence()
+    launchservices = snap.observations[1]
+    launchservices.payload["stale_entries"] = [
+        {"bundle_id": "com.google.Chrome", "path": "/Volumes/OldDisk/Google Chrome.app"},
+        {"bundle_id": "com.google.Chrome.code_sign_clone", "path": "/Applications/Google Chrome.app"},
+    ]
+    return snap
+
+
+def test_solver_does_not_prioritize_empty_trash_without_trash_evidence():
+    solution = build_local_network_solution(_snapshot_with_non_trash_stale_chrome())
+
+    assert solution.repair_plan[0].id == "manual-reinstall-chrome"
+    assert "LN-E008" in solution.repair_plan[0].evidence_ids
+    assert solution.repair_plan[1].id == "trace-local-network"
+
+
+def test_solver_prioritizes_trace_when_only_trace_signals_are_available():
+    snapshot = Snapshot(
+        host="test-host",
+        observations=[
+            Observation(
+                collector="tcc",
+                started_at=1,
+                ended_at=2,
+                payload={"direct_localnetwork_query": {"stdout": ""}, "user_tcc": {"hits": []}},
+            ),
+            Observation(
+                collector="launchservices",
+                started_at=1,
+                ended_at=2,
+                payload={"stale_entries": [], "candidate_files": {"stdout": ""}},
+            ),
+        ],
+    )
+    trace_analysis = {
+        "signal_counts": {"securityprivacyextension": 3, "launchservices_csstore": 2},
+        "timeline_events": [{"signal": "securityprivacyextension"}],
+    }
+
+    solution = build_local_network_solution(snapshot, trace_analysis=trace_analysis)
+
+    assert solution.repair_plan[0].id == "trace-local-network"
+    assert {"LN-E004", "LN-E005"}.issubset(set(solution.repair_plan[0].evidence_ids))
+
+
+def test_solver_renders_confidence_for_evidence():
+    solution = build_local_network_solution(_snapshot_with_known_evidence())
+
+    assert "confidence" in solution.render_text()
+
+
 def test_cli_solve_local_network_command_works(monkeypatch):
     monkeypatch.setattr(
         "macos_state_explorer.cli.create_snapshot",

@@ -44,7 +44,10 @@ def verify_local_network(
     if expected_branch_id in {"manual-empty-trash-reboot", "manual-reinstall-chrome"}:
         chrome_evidence = _chrome_launchservices_evidence(evidence.items)
         if chrome_evidence:
-            next_candidate = candidates[current_index + 1] if current_index + 1 < len(candidates) else None
+            if current_index < 0:
+                next_candidate = candidates[0] if candidates else None
+            else:
+                next_candidate = candidates[current_index + 1] if current_index + 1 < len(candidates) else None
             return LocalNetworkVerification(
                 status="FAILED",
                 branch_id=expected_branch_id,
@@ -108,7 +111,7 @@ def _candidate_index(candidates: list[RepairCandidate], branch_id: str) -> int:
     for index, candidate in enumerate(candidates):
         if candidate.id == branch_id:
             return index
-    return 0
+    return -1
 
 
 def _chrome_launchservices_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
