@@ -143,51 +143,24 @@ def _fallback_detail(evidence: Sequence[DiagnosticEvidence]) -> str:
     )
 
 
-def _record_command(command: RepairCommand, exit_code: int, stdout: str, stderr: str) -> dict[str, Any]:
-    record = command.to_json_dict(exit_code=exit_code)
-    if stdout:
-        record["stdout"] = stdout
-    if stderr:
-        record["stderr"] = stderr
-    return record
-
-
-def _lsregister_refresh_preflight(lsregister: Path):
-    help_command = RepairCommand(
-        argv=(str(lsregister), "-h"),
-        description="Check supported lsregister options before refreshing the user application registration cache.",
-    )
-
-    def preflight(runner: CommandRunner) -> RepairPreflightResult:
-        exit_code, stdout, stderr = runner(list(help_command.argv))
-        executed_commands = (_record_command(help_command, exit_code, stdout, stderr),)
-        output = f"{stdout}\n{stderr}"
-        if exit_code != 0:
+def _lsregister_refresh_preflight(lsregister: Path, refresh_command: RepairCommand):
+    def preflight(_runner: CommandRunner) -> RepairPreflightResult:
+        expected_argv = (str(lsregister), "-r", "-f", "-apps", "user")
+        forbidden_options = {"-kill", "-delete", "-u"}
+        used_forbidden_options = tuple(option for option in refresh_command.argv if option in forbidden_options)
+        if refresh_command.argv != expected_argv or used_forbidden_options:
             return RepairPreflightResult(
                 supported=False,
-                message="Unable to verify lsregister compatibility before LaunchServices refresh.",
+                message="Unsafe or unsupported lsregister refresh command form.",
                 errors=(
-                    stderr or "lsregister help failed; use the manual reinstall or trace fallback branch before retrying automated refresh.",
+                    "The LaunchServices repair action must use exactly "
+                    "`lsregister -r -f -apps user` and must not use destructive or removed options "
+                    f"{', '.join(used_forbidden_options) or 'none'}.",
                 ),
-                executed_commands=executed_commands,
-            )
-        required_options = ("-r", "-f", "-apps")
-        missing = tuple(option for option in required_options if option not in output)
-        if missing:
-            return RepairPreflightResult(
-                supported=False,
-                message="Unsupported lsregister option set for LaunchServices refresh.",
-                errors=(
-                    "This macOS lsregister help output does not advertise required options "
-                    f"{', '.join(missing)}; do not retry obsolete -kill. "
-                    "Use the manual reinstall or trace fallback branch for actionable next steps.",
-                ),
-                executed_commands=executed_commands,
             )
         return RepairPreflightResult(
             supported=True,
-            message="lsregister supports the user application registration refresh options.",
-            executed_commands=executed_commands,
+            message="lsregister refresh command form is safe to attempt.",
         )
 
     return preflight
@@ -204,6 +177,10 @@ def local_network_repair_actions(
     lsregister = Path(
         "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
     )
+    refresh_command = RepairCommand(
+        argv=(str(lsregister), "-r", "-f", "-apps", "user"),
+        description="Refresh user-domain application registrations without deleting the LaunchServices database.",
+    )
     return {
         "refresh-launchservices-user-cache": RepairAction(
             id="refresh-launchservices-user-cache",
@@ -214,12 +191,7 @@ def local_network_repair_actions(
                 "This is limited to the user-domain LaunchServices derived cache; it does not delete applications, "
                 "profiles, TCC databases, or user documents, and macOS can rebuild the cache deterministically."
             ),
-            commands=(
-                RepairCommand(
-                    argv=(str(lsregister), "-r", "-f", "-apps", "user"),
-                    description="Refresh user-domain application registrations without deleting the LaunchServices database.",
-                ),
-            ),
+            commands=(refresh_command,),
             preconditions=(
                 RepairPrecondition(
                     id="lsregister-present",
@@ -238,7 +210,7 @@ def local_network_repair_actions(
                 "~/Library/Application Support/com.apple.sharedfilelist",
             ),
             runner=command_runner,
-            preflight=_lsregister_refresh_preflight(lsregister),
+            preflight=_lsregister_refresh_preflight(lsregister, refresh_command),
         ),
         "open-local-network-settings": RepairAction(
             id="open-local-network-settings",
