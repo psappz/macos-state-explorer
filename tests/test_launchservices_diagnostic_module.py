@@ -149,12 +149,13 @@ def test_report_launchservices_json_and_support_bundle(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert list(payload) == ["command", "solution", "supporting_commands", "bundle_schema_version"]
+    assert list(payload) == ["command", "solution", "analysis", "supporting_commands", "bundle_schema_version"]
     assert payload["command"] == "report launchservices"
     assert payload["solution"]["command"] == "solve launchservices"
     assert sorted(path.name for path in bundle.iterdir()) == [
         "command.json",
         "environment.json",
+        "launchservices-analysis.json",
         "report.json",
         "report.txt",
     ]

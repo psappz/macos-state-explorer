@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 from macos_state_explorer.core.model import Snapshot
 from macos_state_explorer.diagnostics.framework import build_support_bundle
 from macos_state_explorer.diagnostics.local_network.verification import LocalNetworkVerification, verify_local_network
+from macos_state_explorer.launchservices.analysis import LaunchServicesAnalysis, analysis_from_snapshot_payload
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 
 
@@ -17,6 +19,7 @@ class LocalNetworkReport:
     solution: LocalNetworkSolution
     verification: LocalNetworkVerification
     trace_analysis: dict[str, Any] | None = None
+    launchservices_analysis: LaunchServicesAnalysis | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         solution_json = self.solution.to_json_dict()
@@ -32,6 +35,9 @@ class LocalNetworkReport:
             "repair_candidates": solution_json["repair_candidates"],
             "verification": verification_json,
             "next_actions": _next_actions_to_json(self.solution, self.verification, self.trace_analysis),
+            "launchservices_analysis": self.launchservices_analysis.to_json_dict()
+            if self.launchservices_analysis
+            else None,
         }
 
     def render_text(self) -> str:
@@ -121,7 +127,7 @@ def write_local_network_support_bundle(
     branch_id: str,
     trace_path: Path | None = None,
 ) -> Path:
-    return build_support_bundle(
+    bundle = build_support_bundle(
         bundle_path,
         report_json=report.to_json_dict(),
         report_text=report.render_text(),
@@ -134,6 +140,11 @@ def write_local_network_support_bundle(
         environment=_environment_summary(),
         artifact_sources={"trace": trace_path} if trace_path is not None else None,
     )
+    if report.launchservices_analysis is not None:
+        (bundle / "launchservices-analysis.json").write_text(
+            json.dumps(report.launchservices_analysis.to_json_dict(), indent=2, ensure_ascii=False) + "\n"
+        )
+    return bundle
 
 
 def build_local_network_report(
@@ -144,11 +155,13 @@ def build_local_network_report(
 ) -> LocalNetworkReport:
     solution = build_local_network_solution(snapshot, trace_analysis=trace_analysis)
     verification = verify_local_network(snapshot, expected_branch_id=branch_id, trace_analysis=trace_analysis)
+    payload = next((observation.payload for observation in snapshot.observations if observation.collector == "launchservices"), {})
     return LocalNetworkReport(
         snapshot=snapshot,
         trace_analysis=trace_analysis,
         solution=solution,
         verification=verification,
+        launchservices_analysis=analysis_from_snapshot_payload(payload if isinstance(payload, dict) else {}),
     )
 
 
