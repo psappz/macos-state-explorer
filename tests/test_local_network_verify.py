@@ -12,13 +12,14 @@ def launchservices_entry(
     *,
     bundle_id: str = "com.google.Chrome",
     classification: LaunchServicesStatus = LaunchServicesStatus.ORPHANED,
+    path: str = "/Users/test/.Trash/Google Chrome.app",
 ) -> dict[str, object]:
     return LaunchServicesRecord(
         raw_block="raw",
         bundle_id=bundle_id,
         display_name="Google Chrome",
         identifier=bundle_id,
-        path_clean="/Users/test/.Trash/Google Chrome.app",
+        path_clean=path,
         path_exists=False,
         classification=classification,
         node_not_found=classification == LaunchServicesStatus.ORPHANED,
@@ -66,6 +67,17 @@ def test_verify_failed_continues_to_reinstall_branch_when_chrome_evidence_persis
     assert result.next_repair_candidate is not None
     assert result.next_repair_candidate.id == "manual-reinstall-chrome"
     assert result.continues_workflow is True
+
+
+def test_verify_failed_continues_to_first_ranked_branch_when_expected_branch_is_not_ranked():
+    result = verify_local_network(
+        snapshot(entries=[launchservices_entry(path="/Volumes/OldDisk/Google Chrome.app")]),
+        expected_branch_id="manual-empty-trash-reboot",
+    )
+
+    assert result.status == "FAILED"
+    assert result.next_repair_candidate is not None
+    assert result.next_repair_candidate.id == "manual-reinstall-chrome"
 
 
 def test_verify_local_network_cli_outputs_status_and_next_branch(monkeypatch):
