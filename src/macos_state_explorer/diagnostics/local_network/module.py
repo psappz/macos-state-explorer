@@ -173,6 +173,10 @@ def local_network_repair_actions(
                 description="No rollback is needed for a derived cache refresh; macOS rebuilds LaunchServices registrations from installed apps.",
                 metadata={"scope": "user-domain-derived-cache"},
             ),
+            files_touched=(
+                "~/Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist",
+                "~/Library/Application Support/com.apple.sharedfilelist",
+            ),
             runner=command_runner,
         ),
         "open-local-network-settings": RepairAction(
@@ -200,6 +204,7 @@ def local_network_repair_actions(
                 description="Close the opened System Settings window without changing any toggles.",
                 metadata={"user_interaction_required": True},
             ),
+            files_touched=(),
             runner=command_runner,
         ),
     }

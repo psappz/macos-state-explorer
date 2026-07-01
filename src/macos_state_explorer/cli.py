@@ -135,6 +135,8 @@ def repair_local_network_cmd(
     branch: str | None = typer.Option(None, "--branch", help="Repair candidate/branch id to repair."),
     trace: Path | None = None,
     dry_run: bool = typer.Option(True, "--dry-run/--execute", help="Preview or execute the selected repair action."),
+    confirm: bool = typer.Option(False, "--confirm", help="Required with --execute to run repair commands."),
+    audit_log: Path | None = typer.Option(None, "--audit-log", help="Append a JSONL repair audit event to this path."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ):
     snap = create_snapshot(fast=True)
@@ -143,13 +145,15 @@ def repair_local_network_cmd(
         action_id=action,
         candidate_id=branch,
         dry_run=dry_run,
+        confirmed=confirm,
+        audit_log=audit_log,
         context={"trace_analysis": load_trace_analysis(trace)},
     )
     if json_output:
         typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
     else:
         console.print(result.render_text(), markup=False)
-    if result.status is RepairStatus.NOT_FOUND:
+    if result.status in {RepairStatus.NOT_FOUND, RepairStatus.BLOCKED, RepairStatus.FAILED}:
         raise typer.Exit(1)
 
 

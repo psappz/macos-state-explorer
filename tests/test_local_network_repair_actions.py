@@ -81,6 +81,9 @@ def test_repair_local_network_dry_run_json_uses_ranked_repair_action(monkeypatch
         "rollback",
         "executed_commands",
         "message",
+        "files_touched",
+        "errors",
+        "audit_log",
     ]
     assert payload["command"] == "repair local-network"
     assert payload["action_id"] == "refresh-launchservices-user-cache"
@@ -121,6 +124,113 @@ def test_local_network_repair_execution_uses_injected_runner_for_idempotency(mon
     assert executed == [
         ["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-kill", "-r", "-domain", "user"],
         ["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-kill", "-r", "-domain", "user"],
+    ]
+
+
+def test_repair_local_network_execute_requires_confirm_and_writes_audit_log(monkeypatch, tmp_path):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
+    audit_log = tmp_path / "repair-audit.jsonl"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        ["repair", "local-network", "--execute", "--json", "--audit-log", str(audit_log)],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "BLOCKED"
+    assert payload["dry_run"] is False
+    assert payload["audit_log"] == str(audit_log)
+    event = json.loads(audit_log.read_text().splitlines()[0])
+    assert event["module"] == "local-network"
+    assert event["mode"] == "execute"
+    assert event["result"]["status"] == "BLOCKED"
+    assert "confirmation" in event["errors"][0].lower()
+
+
+def test_repair_local_network_confirmed_execution_json_records_audit_log(monkeypatch, tmp_path):
+    executed: list[list[str]] = []
+
+    def fake_runner(command: list[str]) -> tuple[int, str, str]:
+        executed.append(command)
+        return 0, "opened", ""
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
+    monkeypatch.setattr("macos_state_explorer.diagnostics.framework.default_command_runner", fake_runner)
+    audit_log = tmp_path / "repair-audit.jsonl"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "repair",
+            "local-network",
+            "--action",
+            "open-local-network-settings",
+            "--execute",
+            "--confirm",
+            "--json",
+            "--audit-log",
+            str(audit_log),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "SUCCESS"
+    assert payload["dry_run"] is False
+    assert payload["audit_log"] == str(audit_log)
+    assert executed == [["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"]]
+    event = json.loads(audit_log.read_text().splitlines()[0])
+    assert event["selected_action"] == {"id": "open-local-network-settings", "candidate_id": "trace-local-network"}
+    assert event["result"]["status"] == "SUCCESS"
+    assert event["rollback"]["available"] is True
+
+
+def test_repair_local_network_dry_run_with_audit_log_does_not_execute(monkeypatch, tmp_path):
+    executed: list[list[str]] = []
+
+    def fake_runner(command: list[str]) -> tuple[int, str, str]:
+        executed.append(command)
+        return 0, "unexpected", ""
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
+    monkeypatch.setattr("macos_state_explorer.diagnostics.framework.default_command_runner", fake_runner)
+    audit_log = tmp_path / "repair-audit.jsonl"
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["repair", "local-network", "--dry-run", "--audit-log", str(audit_log), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "DRY_RUN"
+    assert executed == []
+    event = json.loads(audit_log.read_text().splitlines()[0])
+    assert event["mode"] == "dry-run"
+    assert event["files_touched"]
+
+
+def test_solve_and_report_json_contracts_remain_unchanged_after_repair_audit(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
+    runner = CliRunner()
+
+    solve = runner.invoke(app, ["solve", "local-network", "--json"])
+    report = runner.invoke(app, ["report", "local-network", "--json"])
+
+    assert solve.exit_code == 0
+    assert list(json.loads(solve.stdout)) == ["command", "diagnosis", "evidence", "matched_rules", "repair_candidates", "next_action"]
+    assert report.exit_code == 0
+    assert list(json.loads(report.stdout)) == [
+        "command",
+        "system_context",
+        "trace",
+        "diagnosis",
+        "evidence",
+        "matched_rules",
+        "repair_candidates",
+        "verification",
+        "next_actions",
     ]
 
 

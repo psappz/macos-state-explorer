@@ -47,10 +47,14 @@ def _diagnosis_builder(evidence, matches, plan, context=None):
     return "Repairable diagnosis"
 
 
-def _actions(executed: list[list[str]], precondition_satisfied: bool = True):
+def _actions(
+    executed: list[list[str]],
+    precondition_satisfied: bool = True,
+    command_result: tuple[int, str, str] = (0, "ok", ""),
+):
     def runner(command: list[str]) -> tuple[int, str, str]:
         executed.append(command)
-        return 0, "ok", ""
+        return command_result
 
     return {
         "action-a": RepairAction(
@@ -69,12 +73,17 @@ def _actions(executed: list[list[str]], precondition_satisfied: bool = True):
                 ),
             ),
             rollback=RepairRollback(available=True, description="Run examplectl repair --undo."),
+            files_touched=("/tmp/example-state",),
             runner=runner,
         )
     }
 
 
-def _module(executed: list[list[str]], precondition_satisfied: bool = True) -> DiagnosticModule:
+def _module(
+    executed: list[list[str]],
+    precondition_satisfied: bool = True,
+    command_result: tuple[int, str, str] = (0, "ok", ""),
+) -> DiagnosticModule:
     return DiagnosticModule(
         id="example",
         command_name="example",
@@ -90,7 +99,9 @@ def _module(executed: list[list[str]], precondition_satisfied: bool = True) -> D
         ),
         repair_candidates=_repair_candidates,
         diagnosis_builder=_diagnosis_builder,
-        repair_actions=lambda evidence, candidates, context=None: _actions(executed, precondition_satisfied),
+        repair_actions=lambda evidence, candidates, context=None: _actions(
+            executed, precondition_satisfied, command_result
+        ),
     )
 
 
@@ -116,6 +127,9 @@ def test_repair_action_dry_run_contract_does_not_execute_and_preserves_candidate
         "rollback",
         "executed_commands",
         "message",
+        "files_touched",
+        "errors",
+        "audit_log",
     ]
     assert payload["command"] == "repair example"
     assert payload["dry_run"] is True
@@ -143,8 +157,8 @@ def test_repair_action_execution_is_deterministic_and_idempotent_with_injected_r
     executed: list[list[str]] = []
     engine = FrameworkDiagnosticEngine(_module(executed))
 
-    first = engine.repair(_snapshot(), action_id="action-a", dry_run=False)
-    second = engine.repair(_snapshot(), action_id="action-a", dry_run=False)
+    first = engine.repair(_snapshot(), action_id="action-a", dry_run=False, confirmed=True)
+    second = engine.repair(_snapshot(), action_id="action-a", dry_run=False, confirmed=True)
 
     assert first.status is RepairStatus.SUCCESS
     assert second.status is RepairStatus.SUCCESS
@@ -159,7 +173,7 @@ def test_repair_action_blocks_execution_when_preconditions_fail():
     executed: list[list[str]] = []
     engine = FrameworkDiagnosticEngine(_module(executed, precondition_satisfied=False))
 
-    result = engine.repair(_snapshot(), action_id="action-a", dry_run=False)
+    result = engine.repair(_snapshot(), action_id="action-a", dry_run=False, confirmed=True)
 
     assert result.status is RepairStatus.BLOCKED
     assert executed == []

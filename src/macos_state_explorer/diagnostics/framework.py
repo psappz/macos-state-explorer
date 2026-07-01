@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -85,6 +86,9 @@ class RepairResult:
     rollback: RepairRollback = field(default_factory=lambda: RepairRollback(False, "No rollback metadata provided."))
     executed_commands: tuple[dict[str, Any], ...] = ()
     message: str = ""
+    files_touched: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+    audit_log: str | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         safety = self.safety_classification.value if isinstance(self.safety_classification, RepairSafety) else self.safety_classification
@@ -101,6 +105,9 @@ class RepairResult:
             "rollback": self.rollback.to_json_dict(),
             "executed_commands": list(self.executed_commands),
             "message": self.message,
+            "files_touched": list(self.files_touched),
+            "errors": list(self.errors),
+            "audit_log": self.audit_log,
         }
 
     def render_text(self) -> str:
@@ -122,7 +129,14 @@ class RepairResult:
                 lines.append(f"- {precondition.id} [{state}] {precondition.title}: {precondition.detail}")
         else:
             lines.append("- none")
-        lines.extend(["", "Rollback", f"- {self.rollback.description}", "", "Commands"])
+        lines.extend(["", "Rollback", f"- {self.rollback.description}", "", "Files touched"])
+        if self.files_touched:
+            for path in self.files_touched:
+                lines.append(f"- {path}")
+        else:
+            lines.append("- none")
+        lines.append("")
+        lines.append("Commands")
         if self.executed_commands:
             for command in self.executed_commands:
                 rendered = " ".join(command["argv"])
@@ -131,6 +145,12 @@ class RepairResult:
                 lines.append(f"- {rendered} ({suffix})")
         else:
             lines.append("- none")
+        if self.errors:
+            lines.extend(["", "Errors"])
+            for error in self.errors:
+                lines.append(f"- {error}")
+        if self.audit_log:
+            lines.extend(["", "Audit log", f"- {self.audit_log}"])
         if self.message:
             lines.extend(["", "Message", f"- {self.message}"])
         return "\n".join(lines)
@@ -146,6 +166,7 @@ class RepairAction:
     commands: tuple[RepairCommand, ...] = ()
     preconditions: tuple[RepairPrecondition, ...] = ()
     rollback: RepairRollback = field(default_factory=lambda: RepairRollback(False, "No automated rollback is available."))
+    files_touched: tuple[str, ...] = ()
     runner: CommandRunner | None = None
 
     @staticmethod
@@ -196,6 +217,7 @@ class RepairAction:
                 rollback=self.rollback,
                 executed_commands=command_records,
                 message="Dry run only; no commands were executed.",
+                files_touched=self.files_touched,
             )
         failed_preconditions = [precondition for precondition in self.preconditions if not precondition.satisfied]
         if failed_preconditions:
@@ -212,6 +234,8 @@ class RepairAction:
                 rollback=self.rollback,
                 executed_commands=command_records,
                 message="One or more preconditions failed; no commands were executed.",
+                files_touched=self.files_touched,
+                errors=tuple(f"Precondition failed: {precondition.id}" for precondition in failed_preconditions),
             )
         runner = self.runner or default_command_runner
         executed: list[dict[str, Any]] = []
@@ -237,6 +261,8 @@ class RepairAction:
                     rollback=self.rollback,
                     executed_commands=tuple(executed),
                     message=f"Command failed with exit code {exit_code}.",
+                    files_touched=self.files_touched,
+                    errors=(stderr or f"Command failed with exit code {exit_code}.",),
                 )
         return RepairResult(
             module=module,
@@ -251,6 +277,7 @@ class RepairAction:
             rollback=self.rollback,
             executed_commands=tuple(executed),
             message="Repair action completed.",
+            files_touched=self.files_touched,
         )
 
 
@@ -434,6 +461,8 @@ class FrameworkDiagnosticEngine:
         action_id: str | None = None,
         candidate_id: str | None = None,
         dry_run: bool = True,
+        confirmed: bool = False,
+        audit_log: Path | None = None,
         context: dict[str, Any] | None = None,
     ) -> RepairResult:
         evidence = list(self._module.evidence_provider(snapshot, context))
@@ -444,7 +473,7 @@ class FrameworkDiagnosticEngine:
         selected_candidate = _select_repair_candidate(candidates, candidate_order, action_id=action_id, candidate_id=candidate_id)
         selected_action_id = action_id or (selected_candidate.action_id if selected_candidate else None)
         if selected_action_id is None or selected_action_id not in actions:
-            return RepairResult(
+            result = RepairResult(
                 module=self._module.id,
                 command_name=self._module.command_name,
                 action_id=selected_action_id or action_id or "",
@@ -454,13 +483,65 @@ class FrameworkDiagnosticEngine:
                 safety_classification="unknown",
                 why_safe="No executable repair action is registered for the selected repair candidate.",
                 message="Repair action not found.",
+                errors=("Repair action not found.",),
             )
-        return actions[selected_action_id].run(
+            return _finalize_repair_result(result, audit_log)
+        action = actions[selected_action_id]
+        if not dry_run and not confirmed:
+            result = RepairResult(
+                module=self._module.id,
+                command_name=self._module.command_name,
+                action_id=selected_action_id,
+                candidate_id=selected_candidate.id if selected_candidate else candidate_id,
+                status=RepairStatus.BLOCKED,
+                dry_run=False,
+                safety_classification=action.safety,
+                why_safe=action.why_safe,
+                preconditions=action.preconditions,
+                rollback=action.rollback,
+                executed_commands=tuple(command.to_json_dict() for command in action.commands),
+                message="Execution requires --confirm for non-dry-run repair.",
+                files_touched=action.files_touched,
+                errors=("Execution requires confirmation via --confirm.",),
+            )
+            return _finalize_repair_result(result, audit_log)
+        result = action.run(
             module=self._module.id,
             command_name=self._module.command_name,
             candidate_id=selected_candidate.id if selected_candidate else candidate_id,
             dry_run=dry_run,
         )
+        return _finalize_repair_result(result, audit_log)
+
+
+def _finalize_repair_result(result: RepairResult, audit_log: Path | None) -> RepairResult:
+    if audit_log is None:
+        return result
+    expanded = audit_log.expanduser()
+    audited_result = replace(result, audit_log=str(expanded))
+    write_repair_audit_log(expanded, audited_result)
+    return audited_result
+
+
+def write_repair_audit_log(path: Path, result: RepairResult) -> None:
+    event = repair_audit_event(result)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False, sort_keys=False) + "\n")
+
+
+def repair_audit_event(result: RepairResult) -> dict[str, Any]:
+    return {
+        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "module": result.module,
+        "selected_action": {"id": result.action_id, "candidate_id": result.candidate_id},
+        "mode": "dry-run" if result.dry_run else "execute",
+        "preconditions": [precondition.to_json_dict() for precondition in result.preconditions],
+        "result": result.to_json_dict(),
+        "files_touched": list(result.files_touched),
+        "rollback": result.rollback.to_json_dict(),
+        "errors": list(result.errors),
+    }
 
 
 def evidence_to_json(evidence: DiagnosticEvidence) -> dict[str, Any]:
