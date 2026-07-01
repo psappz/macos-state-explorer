@@ -1,0 +1,76 @@
+{
+  "command": "trace local-network",
+  "out": "/Users/psi/Desktop/mse-local-network-trace",
+  "analysis": {
+    "created_at": 1.0,
+    "keyword_hits": {
+      "Chrome": 2,
+      "SecurityPrivacyExtension": 1
+    },
+    "signal_counts": {
+      "chrome_code_sign_clone": 1,
+      "securityprivacyextension": 1
+    },
+    "correlation_summary": [
+      {
+        "signal": "securityprivacyextension",
+        "count": 1,
+        "sources": [
+          "log_stream.txt"
+        ],
+        "description": "SecurityPrivacyExtension activity while Local Network UI is open"
+      },
+      {
+        "signal": "chrome_code_sign_clone",
+        "count": 1,
+        "sources": [
+          "log_stream.txt"
+        ],
+        "description": "Chrome code-sign clone identity observed"
+      }
+    ],
+    "timeline_events": [
+      {
+        "timestamp": "2026-07-01 12:00:00",
+        "source_file": "log_stream.txt",
+        "signal": "securityprivacyextension",
+        "description": "SecurityPrivacyExtension activity while Local Network UI is open",
+        "process": "System Settings",
+        "paths": [],
+        "line": "System Settings SecurityPrivacyExtension.appex opened Local Network"
+      },
+      {
+        "timestamp": "2026-07-01 12:00:01",
+        "source_file": "log_stream.txt",
+        "signal": "chrome_code_sign_clone",
+        "description": "Chrome code-sign clone identity observed",
+        "process": "lsd",
+        "paths": [],
+        "line": "lsd com.google.Chrome.code_sign_clone registered"
+      }
+    ]
+  },
+  "signals": [
+    {
+      "signal": "securityprivacyextension",
+      "count": 1,
+      "sources": [
+        "log_stream.txt"
+      ],
+      "description": "SecurityPrivacyExtension activity while Local Network UI is open"
+    },
+    {
+      "signal": "chrome_code_sign_clone",
+      "count": 1,
+      "sources": [
+        "log_stream.txt"
+      ],
+      "description": "Chrome code-sign clone identity observed"
+    }
+  ],
+  "candidate_paths": [],
+  "next_action": {
+    "type": "inspect-solve",
+    "command": "mse solve local-network --trace /Users/psi/Desktop/mse-local-network-trace"
+  }
+}
