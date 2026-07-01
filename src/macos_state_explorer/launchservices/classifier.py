@@ -2,19 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-ACTIVE = "ACTIVE"
-STALE = "STALE"
-ORPHANED = "ORPHANED"
-MISSING_VOLUME = "MISSING_VOLUME"
-UNKNOWN = "UNKNOWN"
+from macos_state_explorer.launchservices.models import LaunchServicesStatus
 
-def classify_record(values: dict[str, Any]) -> str:
+
+def classify_record(values: dict[str, Any]) -> LaunchServicesStatus:
     if values.get("node_not_found") and values.get("path_exists") is False:
-        return ORPHANED
+        return LaunchServicesStatus.ORPHANED
     if values.get("volume_exists") is False:
-        return MISSING_VOLUME
+        return LaunchServicesStatus.MISSING_VOLUME
     if values.get("path_exists") is False:
-        return STALE
+        return LaunchServicesStatus.STALE
     if values.get("path_exists") is True:
-        return ACTIVE
-    return UNKNOWN
+        return LaunchServicesStatus.ACTIVE
+    return LaunchServicesStatus.UNKNOWN

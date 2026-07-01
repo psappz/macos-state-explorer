@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
+
+
+class LaunchServicesStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    STALE = "STALE"
+    ORPHANED = "ORPHANED"
+    MISSING_VOLUME = "MISSING_VOLUME"
+    DUPLICATE = "DUPLICATE"
+    SHADOWED = "SHADOWED"
+    SUPERSEDED = "SUPERSEDED"
+    BROKEN = "BROKEN"
+    UNKNOWN = "UNKNOWN"
 
 
 class LaunchServicesRecord(BaseModel):
@@ -32,5 +46,5 @@ class LaunchServicesRecord(BaseModel):
     modification_date: str | None = None
     record_modification_date: str | None = None
     node_not_found: bool = False
-    classification: str = "UNKNOWN"
+    classification: LaunchServicesStatus = LaunchServicesStatus.UNKNOWN
     fields: dict[str, str] = Field(default_factory=dict)

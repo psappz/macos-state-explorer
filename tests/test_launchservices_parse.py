@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 from macos_state_explorer.cli import app
 from macos_state_explorer.core.model import Observation
+from macos_state_explorer.launchservices.models import LaunchServicesStatus
 from macos_state_explorer.launchservices.parser import parse_lsdump
 
 
@@ -33,7 +34,7 @@ def test_parse_active_record(tmp_path: Path):
 
     assert len(records) == 1
     record = records[0]
-    assert record.classification == "ACTIVE"
+    assert record.classification == LaunchServicesStatus.ACTIVE
     assert record.path_clean == str(app_path)
     assert record.path_exists is True
     assert record.volume == "/"
@@ -57,7 +58,7 @@ def test_parse_orphaned_record(tmp_path: Path):
     assert len(records) == 1
     assert records[0].node_not_found is True
     assert records[0].path_exists is False
-    assert records[0].classification == "ORPHANED"
+    assert records[0].classification == LaunchServicesStatus.ORPHANED
 
 
 def test_parse_missing_volume_record():
@@ -72,7 +73,7 @@ def test_parse_missing_volume_record():
     assert len(records) == 1
     assert records[0].volume == "/Volumes/DefinitelyMissingVolume"
     assert records[0].volume_exists is False
-    assert records[0].classification == "MISSING_VOLUME"
+    assert records[0].classification == LaunchServicesStatus.MISSING_VOLUME
 
 
 def test_parse_missing_fields():
@@ -81,7 +82,7 @@ def test_parse_missing_fields():
     assert len(records) == 1
     assert records[0].path is None
     assert records[0].path_exists is None
-    assert records[0].classification == "UNKNOWN"
+    assert records[0].classification == LaunchServicesStatus.UNKNOWN
     assert records[0].canonical_id == "Minimal App"
 
 
@@ -108,7 +109,10 @@ def test_parse_multiple_records(tmp_path: Path):
     records = parse_lsdump(dump, terms=[])
 
     assert [record.identifier for record in records] == ["com.google.Chrome", "com.apple.Safari"]
-    assert [record.classification for record in records] == ["ACTIVE", "ACTIVE"]
+    assert [record.classification for record in records] == [
+        LaunchServicesStatus.ACTIVE,
+        LaunchServicesStatus.ACTIVE,
+    ]
 
 
 def test_unknown_fields_retained():
@@ -146,4 +150,5 @@ def test_cli_launchservices_still_writes_outputs(monkeypatch, tmp_path: Path):
 
     assert result.exit_code == 0
     assert (tmp_path / "launchservices.json").exists()
+    assert (tmp_path / "launchservices.html").exists()
     assert (tmp_path / "stale-launchservices.json").exists()
