@@ -183,3 +183,105 @@ def test_local_network_evidence_summarizes_launchservices_root_causes():
     assert "stale LaunchServices registrations" in stale.detail
     assert "Root causes" in stale.detail
     assert "obsolete Chrome Framework" in stale.detail
+
+
+def test_system_frameworks_and_appex_are_healthy_not_old_chrome_frameworks():
+    records = [
+        record(
+            "/System/Library/ExtensionKit/Extensions/SecurityPrivacyExtension.appex",
+            bundle_id="com.apple.SecurityPrivacyExtension",
+            name="SecurityPrivacyExtension",
+            version="1.0",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+        record(
+            "/System/Library/PrivateFrameworks/ShareKit.framework/Versions/A/PlugIns/ShareSheet.appex",
+            bundle_id="com.apple.ShareKit.ShareSheet",
+            name="ShareSheet",
+            version="1.0",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+        record(
+            "/System/Library/PrivateFrameworks/WorkflowKit.framework",
+            bundle_id="com.apple.WorkflowKit",
+            name="WorkflowKit",
+            version="1.0",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+    ]
+
+    analysis = analyze_launchservices(records)
+
+    assert {entry.root_cause for entry in analysis.entries} == {LaunchServicesRootCause.HEALTHY}
+    assert all("Chrome Framework version" not in " ".join(entry.evidence) for entry in analysis.entries)
+    assert all(group.root_cause != LaunchServicesRootCause.OLD_FRAMEWORK_VERSION for group in analysis.groups)
+
+
+def test_old_framework_version_only_applies_to_google_chrome_framework_paths():
+    analysis = analyze_launchservices(
+        [
+            record(
+                "/System/Library/PrivateFrameworks/ShareKit.framework/Versions/A/ShareKit",
+                bundle_id="com.apple.ShareKit",
+                name="ShareKit",
+                version="1.0",
+                path_exists=False,
+                classification=LaunchServicesStatus.STALE,
+            ),
+            record(
+                "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/148.0.0.0",
+                bundle_id="com.google.Chrome.framework",
+                name="Google Chrome Framework",
+                version="148.0.0.0",
+                path_exists=False,
+                classification=LaunchServicesStatus.STALE,
+            ),
+            record(
+                "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/149.0.0.0",
+                bundle_id="com.google.Chrome.framework",
+                name="Google Chrome Framework",
+                version="149.0.0.0",
+                path_exists=True,
+                classification=LaunchServicesStatus.ACTIVE,
+            ),
+        ]
+    )
+    by_path = {entry.path: entry for entry in analysis.entries}
+
+    assert by_path["/System/Library/PrivateFrameworks/ShareKit.framework/Versions/A/ShareKit"].root_cause != LaunchServicesRootCause.OLD_FRAMEWORK_VERSION
+    assert by_path["/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/148.0.0.0"].root_cause == LaunchServicesRootCause.OLD_FRAMEWORK_VERSION
+
+
+def test_healthy_entries_do_not_dominate_summary_or_default_human_output():
+    analysis = analyze_launchservices(
+        [
+            record("/Applications/Safari.app", bundle_id="com.apple.Safari", name="Safari", path_exists=True, classification=LaunchServicesStatus.ACTIVE),
+            record("/Applications/Notes.app", bundle_id="com.apple.Notes", name="Notes", path_exists=True, classification=LaunchServicesStatus.ACTIVE),
+            record("/Users/patrick/.Trash/Google Chrome.app", path_exists=True),
+        ]
+    )
+    payload = analysis.to_json_dict()
+    output = render_launchservices_analysis(analysis)
+
+    assert [group["root_cause"] for group in payload["groups"]] == ["Trash application"]
+    assert [entry["root_cause"] for entry in payload["entries"]].count("Healthy") == 2
+    assert "/Applications/Safari.app" not in output
+    assert "/Users/patrick/.Trash/Google Chrome.app" in output
+
+
+def test_real_run_examples_cover_volumes_trash_and_healthy_apps():
+    analysis = analyze_launchservices(
+        [
+            record("/Volumes/Google Chrome/Google Chrome.app", volume="/Volumes/Google Chrome", volume_exists=False, classification=LaunchServicesStatus.MISSING_VOLUME),
+            record("/Users/patrick/.Trash/Google Chrome.app", path_exists=True),
+            record("/Applications/Firefox.app", bundle_id="org.mozilla.firefox", name="Firefox", path_exists=True, classification=LaunchServicesStatus.ACTIVE),
+        ]
+    )
+    by_path = {entry.path: entry for entry in analysis.entries}
+
+    assert by_path["/Volumes/Google Chrome/Google Chrome.app"].root_cause == LaunchServicesRootCause.NONEXISTENT_VOLUME
+    assert by_path["/Users/patrick/.Trash/Google Chrome.app"].root_cause == LaunchServicesRootCause.TRASH_APPLICATION
+    assert by_path["/Applications/Firefox.app"].root_cause == LaunchServicesRootCause.HEALTHY

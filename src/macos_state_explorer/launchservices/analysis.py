@@ -9,6 +9,7 @@ from macos_state_explorer.launchservices.models import LaunchServicesRecord, Lau
 
 
 class LaunchServicesRootCause(StrEnum):
+    HEALTHY = "Healthy"
     TRASH_APPLICATION = "Trash application"
     MISSING_APPLICATION_BUNDLE = "Missing application bundle"
     MOUNTED_INSTALLER_DMG = "Mounted installer DMG"
@@ -103,7 +104,7 @@ def analyze_launchservices(records: Iterable[LaunchServicesRecord | dict[str, An
     return LaunchServicesAnalysis(entries=entries, groups=groups)
 
 
-def render_launchservices_analysis(analysis: LaunchServicesAnalysis) -> str:
+def render_launchservices_analysis(analysis: LaunchServicesAnalysis, *, verbose: bool = False) -> str:
     lines = ["LaunchServices root cause analysis", "", "Root causes"]
     if not analysis.groups:
         lines.append("- No LaunchServices registrations to analyze.")
@@ -121,8 +122,11 @@ def render_launchservices_analysis(analysis: LaunchServicesAnalysis) -> str:
                 f"Safety: {group.safety}",
             ]
         )
+    entries = analysis.entries if verbose else [entry for entry in analysis.entries if entry.root_cause != LaunchServicesRootCause.HEALTHY]
     lines.extend(["", "Per-entry analysis"])
-    for entry in analysis.entries:
+    if not entries:
+        lines.append("- No suspicious LaunchServices registrations detected. Use --verbose to show healthy entries.")
+    for entry in entries:
         exists = "exists" if entry.exists_on_disk is True else "missing" if entry.exists_on_disk is False else "unknown"
         lines.extend(
             [
@@ -202,23 +206,23 @@ def _analyze_record(
         repairability = LaunchServicesRepairability.SAFE_MANUAL
         confidence = 0.9
         evidence.append("Registration references a mounted installer volume.")
-    elif "helper" in path_lower or "helper" in bundle_lower or "helper" in name_lower:
+    elif _is_chrome_helper_or_updater(path_lower, bundle_lower, name_lower):
         root = LaunchServicesRootCause.OLD_HELPER_APPLICATION
         repairability = LaunchServicesRepairability.SAFE_MANUAL
         confidence = 0.86
-        evidence.append("Registration points at a Chrome helper application.")
-    elif "framework" in path_lower or "framework" in bundle_lower or "framework" in name_lower:
+        evidence.append("Registration points at a Chrome/Google/Edge helper or updater application.")
+    elif _is_google_chrome_framework(path_lower, bundle_lower, name_lower):
         latest = latest_versions.get(record.bundle_id or "")
         if latest and record.version == latest and record.path_exists is True:
-            root = LaunchServicesRootCause.UNKNOWN
-            repairability = LaunchServicesRepairability.UNKNOWN
-            confidence = 0.55
-            evidence.append("Framework registration appears to match the newest active framework version.")
+            root = LaunchServicesRootCause.HEALTHY
+            repairability = LaunchServicesRepairability.SAFE_AUTOMATIC
+            confidence = 0.99
+            evidence.append("Framework registration appears to match the newest active Chrome Framework version.")
         else:
             root = LaunchServicesRootCause.OLD_FRAMEWORK_VERSION
             repairability = LaunchServicesRepairability.SAFE_MANUAL
             confidence = 0.88 if latest and record.version != latest else 0.78
-            evidence.append(f"Framework version differs from installed Chrome Framework version {latest}.")
+            evidence.append(f"Google Chrome Framework version differs from installed Chrome Framework version {latest}.")
     elif record.classification == LaunchServicesStatus.DUPLICATE:
         root = LaunchServicesRootCause.DUPLICATE_BUNDLE_REGISTRATION
         repairability = LaunchServicesRepairability.SAFE_MANUAL
@@ -239,6 +243,11 @@ def _analyze_record(
         repairability = LaunchServicesRepairability.REQUIRES_REINSTALL
         confidence = 0.9
         evidence.append("Referenced bundle path no longer exists.")
+    elif record.path_exists is True and record.classification == LaunchServicesStatus.ACTIVE:
+        root = LaunchServicesRootCause.HEALTHY
+        repairability = LaunchServicesRepairability.SAFE_AUTOMATIC
+        confidence = 0.99
+        evidence.append("Registration points at an existing active bundle and is not suspicious.")
     else:
         root = LaunchServicesRootCause.UNKNOWN
         repairability = LaunchServicesRepairability.UNKNOWN
@@ -262,7 +271,7 @@ def _analyze_record(
 
 
 def _build_groups(entries: list[LaunchServicesAnalysisEntry]) -> list[LaunchServicesAnalysisGroup]:
-    counts = Counter(entry.root_cause for entry in entries)
+    counts = Counter(entry.root_cause for entry in entries if entry.root_cause != LaunchServicesRootCause.HEALTHY)
     groups: list[LaunchServicesAnalysisGroup] = []
     for root_cause, count in counts.items():
         root_entries = [entry for entry in entries if entry.root_cause == root_cause]
@@ -287,6 +296,25 @@ def _is_old_chrome(record: LaunchServicesRecord, latest_versions: dict[str, str]
     return bool(latest and _version_key(record.version) < _version_key(latest))
 
 
+def _is_google_chrome_framework(path_lower: str, bundle_lower: str, name_lower: str) -> bool:
+    return (
+        "google chrome framework.framework" in path_lower
+        or bundle_lower == "com.google.chrome.framework"
+        or name_lower == "google chrome framework"
+    )
+
+
+def _is_chrome_helper_or_updater(path_lower: str, bundle_lower: str, name_lower: str) -> bool:
+    haystack = " ".join((path_lower, bundle_lower, name_lower))
+    return (
+        ("google chrome" in haystack and "helper" in haystack)
+        or "googleupdater" in haystack
+        or "google updater" in haystack
+        or "edgeupdater" in haystack
+        or "edge updater" in haystack
+    )
+
+
 def _looks_invalid_bundle(path: str | None, record: LaunchServicesRecord) -> bool:
     if not path or record.path_exists is None:
         return False
@@ -306,6 +334,7 @@ def _version_key(value: str) -> tuple[int, ...]:
 
 def _group_explanation(root: LaunchServicesRootCause) -> str:
     return {
+        LaunchServicesRootCause.HEALTHY: "Registration points at an existing active bundle and is not suspicious.",
         LaunchServicesRootCause.TRASH_APPLICATION: "Registration path is inside the user's Trash.",
         LaunchServicesRootCause.MISSING_APPLICATION_BUNDLE: "LaunchServices references an application bundle path that no longer exists.",
         LaunchServicesRootCause.MOUNTED_INSTALLER_DMG: "Registration path is under /Volumes while the volume is currently mounted.",
@@ -321,6 +350,7 @@ def _group_explanation(root: LaunchServicesRootCause) -> str:
 
 def _group_repair(root: LaunchServicesRootCause) -> str:
     return {
+        LaunchServicesRootCause.HEALTHY: "No repair needed.",
         LaunchServicesRootCause.TRASH_APPLICATION: "Review Trash manually, empty only disposable app leftovers, then reboot and re-check.",
         LaunchServicesRootCause.MISSING_APPLICATION_BUNDLE: "Reinstall the missing application or inspect stale LaunchServices paths before cleanup.",
         LaunchServicesRootCause.MOUNTED_INSTALLER_DMG: "Unmount installer volumes after installation, then re-check LaunchServices.",
@@ -336,6 +366,7 @@ def _group_repair(root: LaunchServicesRootCause) -> str:
 
 def _group_safety(root: LaunchServicesRootCause) -> str:
     return {
+        LaunchServicesRootCause.HEALTHY: "SAFE_AUTOMATIC",
         LaunchServicesRootCause.TRASH_APPLICATION: "SAFE_MANUAL",
         LaunchServicesRootCause.MISSING_APPLICATION_BUNDLE: "REQUIRES_REINSTALL",
         LaunchServicesRootCause.MOUNTED_INSTALLER_DMG: "SAFE_MANUAL",

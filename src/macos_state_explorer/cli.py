@@ -65,7 +65,7 @@ def launchservices(
         if "--json" in ctx.args:
             typer.echo(json_module.dumps(analysis.to_json_dict(), sort_keys=False))
         else:
-            console.print(render_launchservices_analysis(analysis), markup=False)
+            console.print(render_launchservices_analysis(analysis, verbose="--verbose" in ctx.args), markup=False)
         return
     out = out.expanduser()
     out.mkdir(parents=True, exist_ok=True)
