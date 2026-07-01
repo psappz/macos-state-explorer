@@ -15,6 +15,16 @@ steps:
   - build_remediation_plan
   - produce_local_network_diagnosis
   - render_terminal_report
+trace_correlation:
+  signals:
+    - securityprivacyextension
+    - launchservices_csstore
+    - tcc_localnetwork
+    - chrome_code_sign_clone
+    - runningboard
+  outputs:
+    - analysis.json: includes signal_counts, correlation_summary and timeline_events
+    - index.html: renders root-cause signals, correlated timeline and candidate paths
 verification:
   primary: mse diagnose local-network
   fallback: mse trace local-network --out ~/Desktop/mse-local-network-trace
