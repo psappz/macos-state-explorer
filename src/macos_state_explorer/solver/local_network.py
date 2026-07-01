@@ -27,6 +27,7 @@ def build_local_network_solution(snapshot: Snapshot, trace_analysis: dict[str, A
         rules=LOCAL_NETWORK_MODULE.rules,
         repair_candidates=LOCAL_NETWORK_MODULE.repair_candidates,
         diagnosis_builder=LOCAL_NETWORK_MODULE.diagnosis_builder,
+        repair_actions=LOCAL_NETWORK_MODULE.repair_actions,
         fallback_repair_order=LOCAL_NETWORK_MODULE.fallback_repair_order,
         supporting_commands=LOCAL_NETWORK_MODULE.supporting_commands,
     )
