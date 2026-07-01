@@ -17,8 +17,10 @@ from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
+from macos_state_explorer.reports.launchservices import build_launchservices_report, write_launchservices_support_bundle
 from macos_state_explorer.reports.launchservices_html import write_launchservices_html
 from macos_state_explorer.reports.local_network import build_local_network_report, write_local_network_support_bundle
+from macos_state_explorer.solver.launchservices import build_launchservices_solution
 from macos_state_explorer.solver.local_network import build_local_network_solution, load_trace_analysis
 from macos_state_explorer.tracers.local_network import trace_json_payload, trace_local_network
 
@@ -97,6 +99,18 @@ def solve_local_network_cmd(
         console.print(solution.render_text(), markup=False)
 
 
+@solve_app.command("launchservices")
+def solve_launchservices_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
+    snap = create_snapshot(fast=True)
+    solution = build_launchservices_solution(snap)
+    if json_output:
+        typer.echo(json_module.dumps(solution.to_json_dict(), sort_keys=False))
+    else:
+        console.print(solution.render_text(), markup=False)
+
+
 @verify_app.command("local-network")
 def verify_local_network_cmd(
     branch: str = "manual-empty-trash-reboot",
@@ -123,6 +137,25 @@ def report_local_network_cmd(
     if bundle is not None:
         try:
             write_local_network_support_bundle(report, bundle, branch_id=branch, trace_path=trace)
+        except ValueError as error:
+            typer.echo(str(error))
+            raise typer.Exit(1) from error
+    if json_output:
+        typer.echo(json_module.dumps(report.to_json_dict(), sort_keys=False))
+    else:
+        console.print(report.render_text(), markup=False)
+
+
+@report_app.command("launchservices")
+def report_launchservices_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+    bundle: Path | None = typer.Option(None, "--bundle", help="Write a deterministic support bundle directory."),
+):
+    snap = create_snapshot(fast=True)
+    report = build_launchservices_report(snap)
+    if bundle is not None:
+        try:
+            write_launchservices_support_bundle(report, bundle)
         except ValueError as error:
             typer.echo(str(error))
             raise typer.Exit(1) from error
