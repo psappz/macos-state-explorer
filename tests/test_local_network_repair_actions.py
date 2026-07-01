@@ -60,11 +60,45 @@ def test_local_network_candidates_can_expose_optional_repair_actions_without_jso
     assert "action_id" not in payload["repair_candidates"][0]
 
 
-def test_repair_local_network_dry_run_json_uses_ranked_repair_action(monkeypatch):
+def test_repair_local_network_dry_run_json_uses_ranked_repair_plan(monkeypatch):
     monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
     runner = CliRunner()
 
     result = runner.invoke(app, ["repair", "local-network", "--dry-run", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert list(payload) == [
+        "command",
+        "module",
+        "status",
+        "dry_run",
+        "confirmed",
+        "plan",
+        "step_results",
+        "message",
+        "audit_log",
+    ]
+    assert payload["command"] == "repair local-network"
+    assert payload["status"] == "DRY_RUN"
+    assert payload["dry_run"] is True
+    assert [step["candidate_id"] for step in payload["plan"]["steps"]] == [
+        "manual-reinstall-chrome",
+        "trace-local-network",
+    ]
+    assert payload["plan"]["steps"][0]["action_id"] == "refresh-launchservices-user-cache"
+    assert payload["step_results"][0]["status"] == "DRY_RUN"
+    assert payload["step_results"][0]["repair_result"]["executed_commands"][0]["exit_code"] is None
+
+
+def test_repair_local_network_explicit_action_preserves_single_action_json(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        ["repair", "local-network", "--action", "refresh-launchservices-user-cache", "--dry-run", "--json"],
+    )
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
@@ -85,14 +119,9 @@ def test_repair_local_network_dry_run_json_uses_ranked_repair_action(monkeypatch
         "errors",
         "audit_log",
     ]
-    assert payload["command"] == "repair local-network"
     assert payload["action_id"] == "refresh-launchservices-user-cache"
     assert payload["candidate_id"] == "manual-reinstall-chrome"
     assert payload["status"] == "DRY_RUN"
-    assert payload["dry_run"] is True
-    assert payload["safety_classification"] in {"low", "moderate"}
-    assert "derived" in payload["why_safe"] or "user-domain" in payload["why_safe"]
-    assert payload["executed_commands"][0]["exit_code"] is None
 
 
 def test_repair_local_network_human_dry_run_displays_safety_reason(monkeypatch):
@@ -102,9 +131,9 @@ def test_repair_local_network_human_dry_run_displays_safety_reason(monkeypatch):
     result = runner.invoke(app, ["repair", "local-network", "--dry-run"])
 
     assert result.exit_code == 0
-    assert "Repair action" in result.stdout
+    assert "Repair plan" in result.stdout
     assert "Status: DRY_RUN" in result.stdout
-    assert "Why safe" in result.stdout
+    assert "manual-reinstall-chrome" in result.stdout
     assert "refresh-launchservices-user-cache" in result.stdout
 
 
@@ -144,9 +173,9 @@ def test_repair_local_network_execute_requires_confirm_and_writes_audit_log(monk
     assert payload["audit_log"] == str(audit_log)
     event = json.loads(audit_log.read_text().splitlines()[0])
     assert event["module"] == "local-network"
-    assert event["mode"] == "execute"
+    assert event["mode"] == "execute-plan"
     assert event["result"]["status"] == "BLOCKED"
-    assert "confirmation" in event["errors"][0].lower()
+    assert "confirm" in event["result"]["message"].lower()
 
 
 def test_repair_local_network_confirmed_execution_json_records_audit_log(monkeypatch, tmp_path):
@@ -207,8 +236,8 @@ def test_repair_local_network_dry_run_with_audit_log_does_not_execute(monkeypatc
     assert payload["status"] == "DRY_RUN"
     assert executed == []
     event = json.loads(audit_log.read_text().splitlines()[0])
-    assert event["mode"] == "dry-run"
-    assert event["files_touched"]
+    assert event["mode"] == "dry-run-plan"
+    assert event["result"]["step_results"][0]["repair_result"]["files_touched"]
 
 
 def test_solve_and_report_json_contracts_remain_unchanged_after_repair_audit(monkeypatch):

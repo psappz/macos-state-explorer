@@ -39,6 +39,35 @@ class RepairStatus(str, Enum):
     NOT_FOUND = "NOT_FOUND"
 
 
+class RepairPlanStatus(str, Enum):
+    DRY_RUN = "DRY_RUN"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    BLOCKED = "BLOCKED"
+
+
+@dataclass(frozen=True)
+class RepairVerification:
+    status: str
+    branch_id: str
+    observed_result: str
+    evidence_ids: list[str] = field(default_factory=list)
+    continues_workflow: bool = False
+    transition: str | None = None
+    next_step: str | None = None
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "branch_id": self.branch_id,
+            "observed_result": self.observed_result,
+            "evidence_ids": list(self.evidence_ids),
+            "continues_workflow": self.continues_workflow,
+            "transition": self.transition,
+            "next_step": self.next_step,
+        }
+
+
 @dataclass(frozen=True)
 class RepairPrecondition:
     id: str
@@ -300,6 +329,121 @@ class RepairCandidate:
 
 
 @dataclass(frozen=True)
+class RepairStep:
+    index: int
+    candidate: RepairCandidate
+    action: RepairAction | None
+    skipped_reason: str | None = None
+
+    @property
+    def candidate_id(self) -> str:
+        return self.candidate.id
+
+    @property
+    def action_id(self) -> str | None:
+        return self.action.id if self.action else self.candidate.action_id
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "candidate_id": self.candidate.id,
+            "candidate": repair_candidate_to_json(self.candidate),
+            "action_id": self.action_id,
+            "safety_classification": _repair_safety_value(self.action.safety) if self.action else None,
+            "skipped_reason": self.skipped_reason,
+        }
+
+
+@dataclass(frozen=True)
+class RepairPlan:
+    module: str
+    command_name: str
+    steps: tuple[RepairStep, ...]
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "command": f"repair {self.command_name}",
+            "module": self.module,
+            "steps": [step.to_json_dict() for step in self.steps],
+        }
+
+
+@dataclass(frozen=True)
+class RepairStepResult:
+    index: int
+    candidate_id: str
+    action_id: str | None
+    status: str
+    repair_result: RepairResult | None = None
+    verification: RepairVerification | None = None
+    message: str = ""
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "candidate_id": self.candidate_id,
+            "action_id": self.action_id,
+            "status": self.status,
+            "repair_result": self.repair_result.to_json_dict() if self.repair_result else None,
+            "verification": self.verification.to_json_dict() if self.verification else None,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class RepairPlanResult:
+    module: str
+    command_name: str
+    status: RepairPlanStatus
+    dry_run: bool
+    confirmed: bool
+    plan: RepairPlan
+    step_results: tuple[RepairStepResult, ...]
+    message: str = ""
+    audit_log: str | None = None
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "command": f"repair {self.command_name}",
+            "module": self.module,
+            "status": self.status.value,
+            "dry_run": self.dry_run,
+            "confirmed": self.confirmed,
+            "plan": self.plan.to_json_dict(),
+            "step_results": [step.to_json_dict() for step in self.step_results],
+            "message": self.message,
+            "audit_log": self.audit_log,
+        }
+
+    def render_text(self) -> str:
+        lines = [
+            "Repair plan",
+            f"- Module: {self.module}",
+            f"- Status: {self.status.value}",
+            f"- Dry run: {'yes' if self.dry_run else 'no'}",
+            f"- Confirmed: {'yes' if self.confirmed else 'no'}",
+            "",
+            "Steps",
+        ]
+        for step_result in self.step_results:
+            lines.append(
+                f"{step_result.index}. {step_result.candidate_id}"
+                f" ({step_result.action_id or 'manual-only'}) — {step_result.status}"
+            )
+            if step_result.verification:
+                lines.append(
+                    f"   Verification: {step_result.verification.status} — {step_result.verification.observed_result}"
+                )
+            if step_result.message:
+                lines.append(f"   {step_result.message}")
+        if self.audit_log:
+            lines.extend(["", "Audit log", f"- {self.audit_log}"])
+        if self.message:
+            lines.extend(["", "Message", f"- {self.message}"])
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True)
 class DiagnosticSolution:
     command_name: str
     diagnosis: str
@@ -385,6 +529,8 @@ RepairActionFactory = Callable[
     [Sequence[DiagnosticEvidence], dict[str, RepairCandidate], dict[str, Any] | None],
     dict[str, RepairAction],
 ]
+RepairVerifier = Callable[[Snapshot, RepairCandidate, dict[str, Any] | None], RepairVerification]
+SnapshotProvider = Callable[[], Snapshot]
 DiagnosisBuilder = Callable[
     [Sequence[DiagnosticEvidence], Sequence[RuleMatch], Sequence[RepairCandidate], dict[str, Any] | None],
     str,
@@ -408,6 +554,7 @@ class DiagnosticModule:
     repair_candidates: RepairCandidateFactory
     diagnosis_builder: DiagnosisBuilder
     repair_actions: RepairActionFactory = no_repair_actions
+    repair_verifier: RepairVerifier | None = None
     fallback_repair_order: tuple[str, ...] = ()
     supporting_commands: tuple[str, ...] = ()
 
@@ -453,6 +600,229 @@ class FrameworkDiagnosticEngine:
             rule_matches=list(rule_matches),
             supporting_commands=self._module.supporting_commands,
         )
+
+    def plan_repair(
+        self,
+        snapshot: Snapshot,
+        *,
+        action_id: str | None = None,
+        candidate_id: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> RepairPlan:
+        evidence = list(self._module.evidence_provider(snapshot, context))
+        rule_matches = RuleEngine(self._module.rules).evaluate(evidence)
+        candidates = self._module.repair_candidates(evidence, context)
+        candidate_order = _candidate_order_from_rules(rule_matches) or list(self._module.fallback_repair_order)
+        actions = self._module.repair_actions(evidence, candidates, context)
+        selected_candidate = _select_repair_candidate(candidates, candidate_order, action_id=action_id, candidate_id=candidate_id)
+        if action_id is not None or candidate_id is not None:
+            ordered_candidates = [selected_candidate] if selected_candidate else []
+        else:
+            ordered_candidates = [candidates[candidate_id] for candidate_id in candidate_order if candidate_id in candidates]
+        steps: list[RepairStep] = []
+        for index, candidate in enumerate(ordered_candidates, start=1):
+            candidate_action_id = action_id or candidate.action_id
+            action = actions.get(candidate_action_id) if candidate_action_id else None
+            skipped_reason = None if action else "No executable repair action is registered for this repair candidate."
+            steps.append(RepairStep(index=index, candidate=candidate, action=action, skipped_reason=skipped_reason))
+        return RepairPlan(module=self._module.id, command_name=self._module.command_name, steps=tuple(steps))
+
+    def repair_plan(
+        self,
+        snapshot: Snapshot,
+        *,
+        action_id: str | None = None,
+        candidate_id: str | None = None,
+        dry_run: bool = True,
+        confirmed: bool = False,
+        audit_log: Path | None = None,
+        context: dict[str, Any] | None = None,
+        snapshot_provider: SnapshotProvider | None = None,
+    ) -> RepairPlanResult:
+        plan = self.plan_repair(snapshot, action_id=action_id, candidate_id=candidate_id, context=context)
+        if not dry_run and not confirmed:
+            result = RepairPlanResult(
+                module=self._module.id,
+                command_name=self._module.command_name,
+                status=RepairPlanStatus.BLOCKED,
+                dry_run=False,
+                confirmed=False,
+                plan=plan,
+                step_results=tuple(
+                    RepairStepResult(
+                        index=step.index,
+                        candidate_id=step.candidate_id,
+                        action_id=step.action_id,
+                        status="BLOCKED" if step.action else "SKIPPED",
+                        message=(
+                            "Execution requires --confirm for non-dry-run repair plan."
+                            if step.action
+                            else step.skipped_reason or "Skipped."
+                        ),
+                    )
+                    for step in plan.steps
+                ),
+                message="Execution requires --confirm for non-dry-run repair plan.",
+            )
+            return _finalize_repair_plan_result(result, audit_log)
+        step_results: list[RepairStepResult] = []
+        if dry_run:
+            for step in plan.steps:
+                if step.action is None:
+                    step_results.append(
+                        RepairStepResult(
+                            index=step.index,
+                            candidate_id=step.candidate_id,
+                            action_id=step.action_id,
+                            status="SKIPPED",
+                            message=step.skipped_reason or "Skipped.",
+                        )
+                    )
+                    continue
+                repair_result = step.action.run(
+                    module=self._module.id,
+                    command_name=self._module.command_name,
+                    candidate_id=step.candidate_id,
+                    dry_run=True,
+                )
+                step_results.append(
+                    RepairStepResult(
+                        index=step.index,
+                        candidate_id=step.candidate_id,
+                        action_id=step.action_id,
+                        status=repair_result.status.value,
+                        repair_result=repair_result,
+                        message=repair_result.message,
+                    )
+                )
+            result = RepairPlanResult(
+                module=self._module.id,
+                command_name=self._module.command_name,
+                status=RepairPlanStatus.DRY_RUN,
+                dry_run=True,
+                confirmed=confirmed,
+                plan=plan,
+                step_results=tuple(step_results),
+                message="Dry run only; no commands were executed and no verification was run.",
+            )
+            return _finalize_repair_plan_result(result, audit_log)
+        verifier = self._module.repair_verifier
+        for step in plan.steps:
+            if step.action is None:
+                step_results.append(
+                    RepairStepResult(
+                        index=step.index,
+                        candidate_id=step.candidate_id,
+                        action_id=step.action_id,
+                        status="SKIPPED",
+                        message=step.skipped_reason or "Skipped.",
+                    )
+                )
+                continue
+            if not _is_safe_for_automatic_continuation(step.action.safety):
+                step_results.append(
+                    RepairStepResult(
+                        index=step.index,
+                        candidate_id=step.candidate_id,
+                        action_id=step.action_id,
+                        status="BLOCKED",
+                        message="Step is not safe for automatic continuation; run it manually with an explicit action if needed.",
+                    )
+                )
+                result = RepairPlanResult(
+                    module=self._module.id,
+                    command_name=self._module.command_name,
+                    status=RepairPlanStatus.BLOCKED,
+                    dry_run=False,
+                    confirmed=True,
+                    plan=plan,
+                    step_results=tuple(step_results),
+                    message="Repair plan stopped before a step that is not safe for automatic continuation.",
+                )
+                return _finalize_repair_plan_result(result, audit_log)
+            repair_result = step.action.run(
+                module=self._module.id,
+                command_name=self._module.command_name,
+                candidate_id=step.candidate_id,
+                dry_run=False,
+            )
+            if repair_result.status is not RepairStatus.SUCCESS:
+                step_results.append(
+                    RepairStepResult(
+                        index=step.index,
+                        candidate_id=step.candidate_id,
+                        action_id=step.action_id,
+                        status=repair_result.status.value,
+                        repair_result=repair_result,
+                        message=repair_result.message,
+                    )
+                )
+                result = RepairPlanResult(
+                    module=self._module.id,
+                    command_name=self._module.command_name,
+                    status=RepairPlanStatus.BLOCKED
+                    if repair_result.status is RepairStatus.BLOCKED
+                    else RepairPlanStatus.FAILED,
+                    dry_run=False,
+                    confirmed=True,
+                    plan=plan,
+                    step_results=tuple(step_results),
+                    message="Repair plan stopped because a repair step did not complete successfully.",
+                )
+                return _finalize_repair_plan_result(result, audit_log)
+            verification = None
+            step_status = repair_result.status.value
+            if verifier is not None:
+                verification_snapshot = snapshot_provider() if snapshot_provider else snapshot
+                verification = verifier(verification_snapshot, step.candidate, context)
+                step_status = verification.status
+            step_results.append(
+                RepairStepResult(
+                    index=step.index,
+                    candidate_id=step.candidate_id,
+                    action_id=step.action_id,
+                    status=step_status,
+                    repair_result=repair_result,
+                    verification=verification,
+                    message=repair_result.message,
+                )
+            )
+            if verification and verification.status == "SUCCESS":
+                result = RepairPlanResult(
+                    module=self._module.id,
+                    command_name=self._module.command_name,
+                    status=RepairPlanStatus.SUCCESS,
+                    dry_run=False,
+                    confirmed=True,
+                    plan=plan,
+                    step_results=tuple(step_results),
+                    message="Repair plan stopped after verification succeeded.",
+                )
+                return _finalize_repair_plan_result(result, audit_log)
+            if verification and verification.status not in {"FAILED"}:
+                result = RepairPlanResult(
+                    module=self._module.id,
+                    command_name=self._module.command_name,
+                    status=RepairPlanStatus.BLOCKED,
+                    dry_run=False,
+                    confirmed=True,
+                    plan=plan,
+                    step_results=tuple(step_results),
+                    message="Repair plan stopped because verification did not produce a deterministic failure to advance from.",
+                )
+                return _finalize_repair_plan_result(result, audit_log)
+        final_status = RepairPlanStatus.FAILED if step_results else RepairPlanStatus.BLOCKED
+        result = RepairPlanResult(
+            module=self._module.id,
+            command_name=self._module.command_name,
+            status=final_status,
+            dry_run=False,
+            confirmed=True,
+            plan=plan,
+            step_results=tuple(step_results),
+            message="Repair plan exhausted without successful verification.",
+        )
+        return _finalize_repair_plan_result(result, audit_log)
 
     def repair(
         self,
@@ -521,6 +891,45 @@ def _finalize_repair_result(result: RepairResult, audit_log: Path | None) -> Rep
     audited_result = replace(result, audit_log=str(expanded))
     write_repair_audit_log(expanded, audited_result)
     return audited_result
+
+
+def _finalize_repair_plan_result(result: RepairPlanResult, audit_log: Path | None) -> RepairPlanResult:
+    if audit_log is None:
+        return result
+    expanded = audit_log.expanduser()
+    audited_result = replace(result, audit_log=str(expanded))
+    write_repair_plan_audit_log(expanded, audited_result)
+    return audited_result
+
+
+def write_repair_plan_audit_log(path: Path, result: RepairPlanResult) -> None:
+    event = repair_plan_audit_event(result)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False, sort_keys=False) + "\n")
+
+
+def repair_plan_audit_event(result: RepairPlanResult) -> dict[str, Any]:
+    return {
+        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "module": result.module,
+        "mode": "dry-run-plan" if result.dry_run else "execute-plan",
+        "result": result.to_json_dict(),
+        "errors": [
+            error
+            for step_result in result.step_results
+            if step_result.repair_result
+            for error in step_result.repair_result.errors
+        ],
+    }
+
+
+def _repair_safety_value(safety: RepairSafety | str) -> str:
+    return safety.value if isinstance(safety, RepairSafety) else safety
+
+
+def _is_safe_for_automatic_continuation(safety: RepairSafety | str) -> bool:
+    return _repair_safety_value(safety) in {RepairSafety.LOW.value, RepairSafety.MODERATE.value, RepairSafety.INTERACTIVE.value}
 
 
 def write_repair_audit_log(path: Path, result: RepairResult) -> None:
