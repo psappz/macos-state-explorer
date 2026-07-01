@@ -19,6 +19,7 @@ from macos_state_explorer.diagnostics.local_network.verification import render_v
 from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
 from macos_state_explorer.remediation.rules import build_remediation_plan
+from macos_state_explorer.reports.bundle_diff import compare_support_bundles
 from macos_state_explorer.reports.html import write_report
 from macos_state_explorer.reports.launchservices import build_launchservices_report, write_launchservices_support_bundle
 from macos_state_explorer.reports.launchservices_html import write_launchservices_html
@@ -35,6 +36,7 @@ solve_app = typer.Typer(no_args_is_help=True)
 verify_app = typer.Typer(no_args_is_help=True)
 report_app = typer.Typer(no_args_is_help=True)
 repair_app = typer.Typer(no_args_is_help=True)
+diff_app = typer.Typer(no_args_is_help=True)
 app.add_typer(trace_app, name="trace")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(diagnose_app, name="diagnose")
@@ -42,6 +44,7 @@ app.add_typer(solve_app, name="solve")
 app.add_typer(verify_app, name="verify")
 app.add_typer(report_app, name="report")
 app.add_typer(repair_app, name="repair")
+app.add_typer(diff_app, name="diff")
 console = Console()
 
 
@@ -237,6 +240,23 @@ def report_launchservices_cmd(
         typer.echo(json_module.dumps(report.to_json_dict(), sort_keys=False))
     else:
         console.print(report.render_text(), markup=False)
+
+
+@diff_app.command("bundles")
+def diff_bundles_cmd(
+    before: Path,
+    after: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
+    try:
+        result = compare_support_bundles(before, after)
+    except ValueError as error:
+        typer.echo(str(error))
+        raise typer.Exit(1) from error
+    if json_output:
+        typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
+    else:
+        console.print(result.render_text(), markup=False)
 
 
 @app.command()
