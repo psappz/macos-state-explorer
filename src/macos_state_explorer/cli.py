@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from contextlib import redirect_stdout
+from dataclasses import replace
 import io
 import json as json_module
 import typer
@@ -10,7 +11,7 @@ from rich.console import Console
 from macos_state_explorer.collectors.launchservices import LaunchServicesCollector
 from macos_state_explorer.core.snapshot import create_snapshot
 from macos_state_explorer.core.util import write_json
-from macos_state_explorer.diagnostics.framework import FrameworkDiagnosticEngine, RepairStatus
+from macos_state_explorer.diagnostics.framework import FrameworkDiagnosticEngine, RepairPlanStatus, RepairStatus, RepairVerification
 from macos_state_explorer.diagnostics.local_network.engine import diagnose_local_network
 from macos_state_explorer.diagnostics.local_network.module import LOCAL_NETWORK_MODULE
 from macos_state_explorer.diagnostics.local_network.renderer import render_terminal_report
@@ -140,21 +141,62 @@ def repair_local_network_cmd(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ):
     snap = create_snapshot(fast=True)
-    result = FrameworkDiagnosticEngine(LOCAL_NETWORK_MODULE).repair(
+    context = {"trace_analysis": load_trace_analysis(trace)}
+    engine = FrameworkDiagnosticEngine(_local_network_module_with_repair_verifier())
+    if action is not None or branch is not None:
+        result = engine.repair(
+            snap,
+            action_id=action,
+            candidate_id=branch,
+            dry_run=dry_run,
+            confirmed=confirm,
+            audit_log=audit_log,
+            context=context,
+        )
+        if json_output:
+            typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
+        else:
+            console.print(result.render_text(), markup=False)
+        if result.status in {RepairStatus.NOT_FOUND, RepairStatus.BLOCKED, RepairStatus.FAILED}:
+            raise typer.Exit(1)
+        return
+    plan_result = engine.repair_plan(
         snap,
-        action_id=action,
-        candidate_id=branch,
         dry_run=dry_run,
         confirmed=confirm,
         audit_log=audit_log,
-        context={"trace_analysis": load_trace_analysis(trace)},
+        context=context,
+        snapshot_provider=lambda: create_snapshot(fast=True),
     )
     if json_output:
-        typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
+        typer.echo(json_module.dumps(plan_result.to_json_dict(), sort_keys=False))
     else:
-        console.print(result.render_text(), markup=False)
-    if result.status in {RepairStatus.NOT_FOUND, RepairStatus.BLOCKED, RepairStatus.FAILED}:
+        console.print(plan_result.render_text(), markup=False)
+    if plan_result.status in {RepairPlanStatus.BLOCKED, RepairPlanStatus.FAILED}:
         raise typer.Exit(1)
+
+
+def _local_network_module_with_repair_verifier():
+    return replace(LOCAL_NETWORK_MODULE, repair_verifier=_verify_local_network_repair_step)
+
+
+def _verify_local_network_repair_step(snapshot, candidate, context=None) -> RepairVerification:
+    context = context or {}
+    trace_analysis = context.get("trace_analysis")
+    verification = verify_local_network(
+        snapshot,
+        expected_branch_id=candidate.id,
+        trace_analysis=trace_analysis if isinstance(trace_analysis, dict) else None,
+    )
+    return RepairVerification(
+        status=verification.status,
+        branch_id=verification.branch_id,
+        observed_result=verification.observed_result,
+        evidence_ids=list(verification.evidence_ids),
+        continues_workflow=verification.continues_workflow,
+        transition=verification.transition,
+        next_step=verification.next_step,
+    )
 
 
 @report_app.command("local-network")
