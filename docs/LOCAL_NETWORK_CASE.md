@@ -105,4 +105,22 @@ This correlation may identify shared UUIDs, reused bundle identifiers, shared Te
 
 Support bundles include `networkextension-correlation.json` and `networkextension-correlation.txt`, and bundle diffs include `NetworkExtension Correlation Diff`.
 
+## NetworkExtension raw-reference attribution
+
+`mse networkextension raw-references` is a narrow read-only attribution step for cases where identity correlation finds many `raw_text_reference_only` hits but no safe identity edge. It answers where Chrome-related strings live so a future human-reviewed design can decide whether a preference artifact is worth inspecting.
+
+For each Chrome/Chromium/Google-related raw reference the command reports:
+
+- artifact path and artifact label
+- recoverable plist key path when structured parsing succeeds
+- value type, matched token, and redacted surrounding context
+- reference category such as `chrome_bundle_id`, `chrome_code_sign_clone`, `chrome_path`, `launchservices_reference`, `securityprivacyextension_reference`, or `generic_chromium_text`
+- binding status: `structurally_bound_identity`, `raw_text_reference_only`, or `ambiguous_preference_reference`
+- safety classification: `inspect_only`, `candidate_local_network_store`, `broad_cache_or_blob`, or `not_actionable`
+- the reason the reference is or is not actionable
+
+Raw-reference attribution does not infer identity edges from text, does not change the correlation graph, and does not change diagnosis, solver, planner, repair ranking, cleanup, or confidence. Broad cache/blob references remain evidence only; they are not promoted into identity or deletion candidates.
+
+Support bundles include `networkextension-raw-references.json` and `networkextension-raw-references.txt`, and bundle diffs include `NetworkExtension Raw References Diff`.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.

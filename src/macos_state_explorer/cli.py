@@ -35,6 +35,7 @@ from macos_state_explorer.launchservices.remediation_plan import (
     render_remediation_plan,
 )
 from macos_state_explorer.networkextension_correlation import build_networkextension_correlation, render_networkextension_correlation
+from macos_state_explorer.networkextension_raw_references import build_networkextension_raw_references, render_networkextension_raw_references
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, render_networkextension_state
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
@@ -109,6 +110,19 @@ def networkextension_correlate_command(
         typer.echo(json_module.dumps(correlation.to_json_dict(), sort_keys=False))
     else:
         console.print(render_networkextension_correlation(correlation), markup=False)
+
+
+@networkextension_app.command("raw-references")
+def networkextension_raw_references_command(
+    root: list[Path] | None = typer.Option(None, "--root", help="Read-only NetworkExtension root or file to inspect; repeatable."),
+    json_output: bool = typer.Option(False, "--json", help="Emit deterministic JSON."),
+):
+    roots = root if root else default_networkextension_roots()
+    raw_references = build_networkextension_raw_references(roots)
+    if json_output:
+        typer.echo(json_module.dumps(raw_references.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_networkextension_raw_references(raw_references), markup=False)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -955,7 +969,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -980,6 +994,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "cleanup_verification_diff": _bundle_cleanup_verification_diff(before_report, after_report),
         "networkextension_state_diff": _bundle_networkextension_state_diff(before_report, after_report),
         "networkextension_correlation_diff": _bundle_networkextension_correlation_diff(before_report, after_report),
+        "networkextension_raw_references_diff": _bundle_networkextension_raw_references_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1196,6 +1211,22 @@ def _bundle_networkextension_correlation_diff(before_report: dict[str, Any], aft
     }
 
 
+def _bundle_networkextension_raw_references_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("networkextension_raw_references_summary")
+    after_value = after_report.get("networkextension_raw_references_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    keys = [
+        "total_raw_references",
+        "artifacts_with_chrome_references",
+        "candidate_local_network_store_references",
+        "broad_cache_or_blob_references",
+        "structurally_bound_references",
+        "non_actionable_references",
+    ]
+    return {f"{key}_delta": int(after.get(key, 0)) - int(before.get(key, 0)) for key in keys}
+
+
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("trace_correlation_summary")
     after_value = after_report.get("trace_correlation_summary")
@@ -1272,6 +1303,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     cleanup_verification = diff.get("cleanup_verification_diff", {})
     networkextension_state = diff.get("networkextension_state_diff", {})
     networkextension_correlation = diff.get("networkextension_correlation_diff", {})
+    networkextension_raw_references = diff.get("networkextension_raw_references_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1344,6 +1376,14 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Resolved unknown generations: {', '.join(networkextension_correlation.get('resolved_unknown_generations', [])) if networkextension_correlation.get('resolved_unknown_generations') else 'none'}",
         f"- Added generations: {', '.join(networkextension_correlation.get('added_generations', [])) if networkextension_correlation.get('added_generations') else 'none'}",
         f"- Removed generations: {', '.join(networkextension_correlation.get('removed_generations', [])) if networkextension_correlation.get('removed_generations') else 'none'}",
+        "",
+        "NetworkExtension Raw References Diff",
+        f"- Total raw references: {networkextension_raw_references.get('total_raw_references_delta', 0):+d}",
+        f"- Artifacts with Chrome references: {networkextension_raw_references.get('artifacts_with_chrome_references_delta', 0):+d}",
+        f"- Candidate Local Network store references: {networkextension_raw_references.get('candidate_local_network_store_references_delta', 0):+d}",
+        f"- Broad cache/blob references: {networkextension_raw_references.get('broad_cache_or_blob_references_delta', 0):+d}",
+        f"- Structurally bound references: {networkextension_raw_references.get('structurally_bound_references_delta', 0):+d}",
+        f"- Non-actionable references: {networkextension_raw_references.get('non_actionable_references_delta', 0):+d}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",
