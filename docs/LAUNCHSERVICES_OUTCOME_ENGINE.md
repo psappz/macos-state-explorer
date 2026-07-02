@@ -5,11 +5,12 @@
 Phase 1 intentionally separates the LaunchServices workflow into deterministic read-only and narrowly confirmed stages:
 
 1. diagnosis: collect the current LaunchServices and Local Network evidence without mutation.
-2. generation analysis: group Chromium-family registrations into product generations so active, obsolete, Trash, mounted-installer, updater, unknown, and system-adjacent evidence are visible separately.
+2. generation analysis: group Chromium-family registrations into application generations so active, obsolete, Trash, mounted-installer, updater, unknown, and system-adjacent evidence are visible separately.
 3. planning: classify generations into safe plan-only candidates, manual-review candidates, active protected generations, and unknown blocked generations.
 4. execution: when explicitly confirmed, execute only PLAN_ONLY_SAFE Chrome obsolete generations. No manual-review, active, unknown, installer, Trash, updater, Apple, system, or unrelated registrations are mutated.
 5. validation: rebuild a fresh LaunchServices analysis after mutation and count remediation only when the planned generation is persistently removed.
 6. outcome: explain the remaining state and whether safe automatic remediation has reached its limit.
+7. registration provenance: explain who likely produced each relevant registration, why it persists, what may regenerate it, and which consumers can use it.
 
 ## Why outcome is pure analysis
 
@@ -35,6 +36,12 @@ Current snapshot state wins over history: if a generation is present now but pri
 Current PLAN_ONLY_SAFE generations are no longer reported as plainly eligible when history shows they were already attempted and did not persistently disappear. The outcome summary distinguishes `eligible_not_attempted`, `attempted_removed`, `attempted_no_persistent_change`, `attempted_unknown`, `attempted_but_present_again`, `manual_review_required`, and `blocked_active`, then reports automatic remediation as `AVAILABLE`, `EXHAUSTED`, `INCOMPLETE`, or `UNKNOWN`.
 
 Audit history is analysis input only; it never triggers mutation. Audit-informed outcome is propagated into Local Network summaries and support bundles when `--audit-log` is provided, including `mse report local-network --bundle --audit-log <jsonl>`.
+
+## Registration Provenance Engine
+
+Phase 2 moves from repair to provenance. The Registration Provenance Engine is pure analysis: it does not mutate LaunchServices, does not add repair functionality, and does not change planner behavior. For each relevant registration it records registration identity, application family, generation, path, producer, producer confidence, producer reasoning, persistence source, regeneration source, consumer set, confidence, and evidence.
+
+The model only reports what available evidence supports. Unknown producers, persistence sources, or regeneration sources remain `Unknown`/`unknown` with low confidence rather than speculative labels. Provenance output is available through `mse launchservices provenance`, Local Network summaries, support bundles as `provenance.json` and `provenance.txt`, and support-bundle provenance diff.
 
 ## Manual-review terminal state
 

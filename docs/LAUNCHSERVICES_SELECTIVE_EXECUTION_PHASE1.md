@@ -7,7 +7,7 @@ Phase 1 is the first milestone that may mutate LaunchServices state. Execution i
 `mse launchservices execute-plan --confirm` executes only remediation steps that are all of the following:
 
 - safety classification: `PLAN_ONLY_SAFE`
-- product family: `Google Chrome`
+- application family: `Google Chrome`
 - action: `plan_unregister_obsolete_generation`
 - generation still exists at execution time
 - generation is still obsolete/stale
@@ -28,7 +28,7 @@ The following generations remain `NOT_EXECUTED` even when present in the plan:
 - active Edge generations
 - unknown generations
 - Apple/system registrations
-- any non-Chrome product-family step
+- any non-Chrome application-family step
 
 Manual-review candidates must be reviewed and promoted by a later milestone before execution is possible.
 

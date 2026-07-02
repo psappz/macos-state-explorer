@@ -23,6 +23,7 @@ from macos_state_explorer.experiments.local_network import experiment_local_netw
 from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, analysis_records_from_snapshot_payload, render_launchservices_analysis
 from macos_state_explorer.launchservices.generations import analyze_generations, render_generation_summary
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, read_execute_plan_audit_history, render_launchservices_outcome
+from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, render_launchservices_provenance
 from macos_state_explorer.launchservices.remediation_plan import (
     LaunchServicesRemediationPlan,
     RemediationSafety,
@@ -70,12 +71,19 @@ def launchservices(
     ctx: typer.Context,
     out: Path = typer.Argument(..., help="Output directory, or 'analyze' for root-cause analysis."),
 ):
-    if str(out) in {"analyze", "generations", "plan", "execute-plan", "outcome"}:
+    if str(out) in {"analyze", "generations", "plan", "execute-plan", "outcome", "provenance"}:
         snap = create_snapshot(fast=True)
         payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
         payload = payload if isinstance(payload, dict) else {}
-        if str(out) in {"generations", "plan", "execute-plan", "outcome"}:
+        if str(out) in {"generations", "plan", "execute-plan", "outcome", "provenance"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
+            if str(out) == "provenance":
+                provenance = build_launchservices_provenance(generations)
+                if "--json" in ctx.args:
+                    typer.echo(json_module.dumps(provenance.to_json_dict(), sort_keys=False))
+                else:
+                    console.print(render_launchservices_provenance(provenance), markup=False)
+                return
             if str(out) == "outcome":
                 outcome = build_launchservices_outcome(generations, audit_history=read_execute_plan_audit_history(_option_paths(ctx.args, "--audit-log")))
                 if "--json" in ctx.args:
@@ -843,7 +851,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -861,6 +869,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         },
         "generation_diff": _bundle_generation_diff(before_report, after_report),
         "outcome_diff": _bundle_outcome_diff(before_report, after_report),
+        "provenance_diff": _bundle_provenance_diff(before_report, after_report),
         "changed_fields": changed_fields,
     }
 
@@ -926,6 +935,23 @@ def _bundle_outcome_diff(before_report: dict[str, Any], after_report: dict[str, 
     }
 
 
+def _bundle_provenance_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("launchservices_provenance_summary")
+    after_value = after_report.get("launchservices_provenance_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    before_consumers = set(_sorted_string_list(before.get("consumers")))
+    after_consumers = set(_sorted_string_list(after.get("consumers")))
+    return {
+        "producer_before": str(before.get("primary_producer", "Unknown")),
+        "producer_after": str(after.get("primary_producer", "Unknown")),
+        "persistence_before": str(before.get("persistence_source", "unknown")),
+        "persistence_after": str(after.get("persistence_source", "unknown")),
+        "added_consumers": sorted(after_consumers - before_consumers),
+        "removed_consumers": sorted(before_consumers - after_consumers),
+    }
+
+
 def _sorted_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -937,6 +963,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     files = diff["files"]
     generation = diff.get("generation_diff", {})
     outcome = diff.get("outcome_diff", {})
+    provenance = diff.get("provenance_diff", {})
     lines = [
         "Support bundle diff",
         f"Before: {diff['before']['path']}",
@@ -959,6 +986,12 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Newly blocked: {outcome.get('newly_blocked', 0)}",
         f"- Resolved: {outcome.get('resolved', 0)}",
         f"- Status: {outcome.get('status_before', 'UNKNOWN')} → {outcome.get('status_after', 'UNKNOWN')}",
+        "",
+        "Provenance Diff",
+        f"- Producer: {provenance.get('producer_before', 'Unknown')} → {provenance.get('producer_after', 'Unknown')}",
+        f"- Persistence: {provenance.get('persistence_before', 'unknown')} → {provenance.get('persistence_after', 'unknown')}",
+        f"- Added consumers: {', '.join(provenance.get('added_consumers', [])) if provenance.get('added_consumers') else 'none'}",
+        f"- Removed consumers: {', '.join(provenance.get('removed_consumers', [])) if provenance.get('removed_consumers') else 'none'}",
         "",
         "Changed fields",
         f"- {', '.join(diff['changed_fields']) if diff['changed_fields'] else 'none'}",

@@ -1,16 +1,15 @@
 # Roadmap
 
-## Product identity
+## Project identity
 
-The project is evolving into **WASP Prism**, the public evidence-driven diagnostic platform within the WASP ecosystem.
+The project is evolving into **WASP Prism**, the future public project identity for evidence-driven diagnostics.
 
 WASP stands for **Web Application Security & Performance**.
 
 - Repository name for now: `macos-state-explorer`.
+- The repository rename is deferred until after the Chrome Local Network reference case is solved.
 - Planned rename: `macos-state-explorer -> wasp-prism` only after the Chrome Local Network reference case is solved.
-- WASP Lens remains the web/CDN-facing product.
-- WASP Prism is the diagnostic core/platform.
-- Some WASP engines/products may remain private.
+- WASP Prism is the public diagnostic project identity.
 - The current macOS/LaunchServices work is the public reference engine and reference case.
 
 ## Version policy

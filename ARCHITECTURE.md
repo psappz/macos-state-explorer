@@ -2,7 +2,7 @@
 
 macOS State Explorer is the current repository name for the public reference implementation that is evolving into **WASP Prism**.
 
-WASP stands for **Web Application Security & Performance**. WASP Prism is the evidence-driven diagnostic core/platform in the WASP ecosystem. WASP Lens remains the web/CDN-facing product. Some WASP engines and products may remain private.
+WASP stands for **Web Application Security & Performance**. WASP Prism is the future public project identity for this evidence-driven diagnostic project. The repository rename is deferred until after the Chrome Local Network reference case is solved.
 
 The repository stays named `macos-state-explorer` until the Chrome Local Network reference case is solved. Planned rename: `macos-state-explorer -> wasp-prism`.
 
@@ -15,7 +15,7 @@ WASP Prism separates reusable diagnostic platform capability from domain-specifi
 - Core must not contain domain-specific logic.
 - Every domain-specific implementation must be an Engine.
 - Core owns domain-neutral snapshot, evidence, reporting, bundle, diff, audit-ingestion, CLI plumbing, and support-bundle primitives.
-- Engines own domain-specific collectors, parsers, classifiers, planners, outcome models, remediation constraints, and user-facing interpretation.
+- Engines own domain-specific collectors, parsers, classifiers, planners, outcome models, provenance models, remediation constraints, and user-facing interpretation.
 - Architecture-affecting PRs must update documentation.
 
 ## Layers

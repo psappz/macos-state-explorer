@@ -210,6 +210,8 @@ def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_p
         "launchservices-analysis.json",
         "outcome.json",
         "outcome.txt",
+        "provenance.json",
+        "provenance.txt",
         "report.json",
         "report.txt",
         "trace/analysis.json",
@@ -240,6 +242,8 @@ def test_report_bundle_without_trace_records_no_trace_artifacts(monkeypatch, tmp
         "launchservices-analysis.json",
         "outcome.json",
         "outcome.txt",
+        "provenance.json",
+        "provenance.txt",
         "report.json",
         "report.txt",
     ]
