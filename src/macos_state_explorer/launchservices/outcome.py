@@ -4,6 +4,8 @@ from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
+import json
+from pathlib import Path
 from typing import Any
 
 from macos_state_explorer.launchservices.generations import GenerationAnalysis
@@ -19,6 +21,19 @@ class GenerationOutcomeState(StrEnum):
     NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
+class AutomaticRemediationStatus(StrEnum):
+    AVAILABLE = "AVAILABLE"
+    EXHAUSTED = "EXHAUSTED"
+    INCOMPLETE = "INCOMPLETE"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class ExecutePlanAuditHistory:
+    by_generation: dict[str, str]
+    source: str | None = None
+
+
 @dataclass(frozen=True)
 class LaunchServicesOutcome:
     outcome_id: str
@@ -32,6 +47,7 @@ class LaunchServicesOutcome:
     evidence_status: dict[str, Any]
     local_network_status: dict[str, Any]
     automatic_remediation_complete: bool
+    automatic_remediation_status: str
     next_manual_actions: list[str]
     confidence: float
     explanation: str
@@ -50,13 +66,19 @@ class LaunchServicesOutcome:
             "evidence_status": dict(self.evidence_status),
             "local_network_status": dict(self.local_network_status),
             "automatic_remediation_complete": self.automatic_remediation_complete,
+            "automatic_remediation_status": self.automatic_remediation_status,
             "next_manual_actions": list(self.next_manual_actions),
             "confidence": self.confidence,
             "explanation": self.explanation,
         }
 
 
-def build_launchservices_outcome(analysis: GenerationAnalysis, *, completed_generation_ids: list[str] | None = None) -> LaunchServicesOutcome:
+def build_launchservices_outcome(
+    analysis: GenerationAnalysis,
+    *,
+    completed_generation_ids: list[str] | None = None,
+    audit_history: ExecutePlanAuditHistory | None = None,
+) -> LaunchServicesOutcome:
     completed_ids = sorted(set(completed_generation_ids or []))
     plan = plan_launchservices_remediation(analysis)
     product_families = sorted({generation.product_family for generation in analysis.generations} | {step.product_family for step in plan.steps})
@@ -68,10 +90,12 @@ def build_launchservices_outcome(analysis: GenerationAnalysis, *, completed_gene
 
     for step in plan.steps:
         state = GenerationOutcomeState.REMAINING_PLAN_SAFE if step.safety == RemediationSafety.PLAN_ONLY_SAFE else GenerationOutcomeState.MANUAL_REVIEW_REQUIRED
+        history_state = _history_state_for_step(step.generation_id, step.safety, audit_history)
         item = {
             "product_family": step.product_family,
             "generation_id": step.generation_id,
             "state": state.value,
+            "history_state": history_state,
             "registration_count": len(step.target_registrations),
             "safety": step.safety.value,
             "reason": step.reason,
@@ -98,6 +122,7 @@ def build_launchservices_outcome(analysis: GenerationAnalysis, *, completed_gene
             "classification": generation.get("classification"),
             "registration_count": generation.get("registration_count", 0),
             "state": state.value,
+            "history_state": _history_state_for_blocked(state),
             "safety": safety,
             "reason": generation.get("reason"),
         }
@@ -109,7 +134,8 @@ def build_launchservices_outcome(analysis: GenerationAnalysis, *, completed_gene
             skipped.append(item)
 
     remaining_plan_safe = [item for item in remaining if item["state"] == GenerationOutcomeState.REMAINING_PLAN_SAFE.value]
-    automatic_complete = not remaining_plan_safe
+    automatic_status = _automatic_status(remaining_plan_safe)
+    automatic_complete = automatic_status == AutomaticRemediationStatus.EXHAUSTED.value and not any(item.get("history_state") == "attempted_unknown" for item in remaining_plan_safe)
     manual_count = len([item for item in remaining if item["state"] == GenerationOutcomeState.MANUAL_REVIEW_REQUIRED.value])
     blocked_count = len(blocked) + len(active)
     evidence_status = {
@@ -120,10 +146,11 @@ def build_launchservices_outcome(analysis: GenerationAnalysis, *, completed_gene
     }
     local_network_status = {
         "status": "UNCHANGED" if remaining or blocked else "CONSISTENT",
-        "reason": "Persistent LaunchServices evidence remains after safe automatic remediation." if automatic_complete and (remaining or blocked) else "No remaining LaunchServices outcome evidence requires automatic execution.",
+        "automatic_remediation_status": automatic_status,
+        "reason": _local_network_reason(automatic_status, bool(remaining or blocked)),
     }
     next_actions = _next_manual_actions(remaining, skipped, blocked)
-    explanation = "Only manual-review generations remain. No additional safe automatic execution exists." if automatic_complete else "Additional PLAN_ONLY_SAFE generations remain eligible for confirmed automatic execution."
+    explanation = _automatic_explanation(automatic_status)
     digest_basis = "|".join([*completed_ids, *(str(item.get("generation_id")) for item in remaining), *(str(item.get("generation_id")) for item in blocked), *(str(item.get("generation_id")) for item in active)])
     outcome_id = f"ls-outcome-{hashlib.sha256(digest_basis.encode()).hexdigest()[:12]}"
     return LaunchServicesOutcome(
@@ -138,6 +165,7 @@ def build_launchservices_outcome(analysis: GenerationAnalysis, *, completed_gene
         evidence_status=evidence_status,
         local_network_status=local_network_status,
         automatic_remediation_complete=automatic_complete,
+        automatic_remediation_status=automatic_status,
         next_manual_actions=next_actions,
         confidence=0.9 if automatic_complete else 0.85,
         explanation=explanation,
@@ -152,6 +180,7 @@ def outcome_summary(outcome: LaunchServicesOutcome) -> dict[str, Any]:
         "remaining": len(outcome.remaining_generations),
         "blocked": len(outcome.blocked_generations) + len(outcome.active_generations),
         "automatic_remediation_complete": outcome.automatic_remediation_complete,
+        "automatic_remediation_status": outcome.automatic_remediation_status,
         "remaining_trash_generations": remaining_counts.get("plan_review_trash_generation", 0),
         "remaining_mounted_installer_generations": remaining_counts.get("plan_review_mounted_installer_generation", 0),
         "remaining_updater_generations": remaining_counts.get("plan_review_stale_updater_generation", 0),
@@ -168,8 +197,9 @@ def render_outcome_summary(summary: dict[str, Any]) -> str:
     lines.append(f"- {summary.get('remaining_mounted_installer_generations', 0)} mounted installer generation")
     lines.append(f"- {summary.get('remaining_updater_generations', 0)} updater generations")
     lines.append("Automatic remediation:")
-    lines.append("COMPLETE" if summary.get("automatic_remediation_complete") else "INCOMPLETE")
-    lines.append("Further execution requires manual review." if summary.get("automatic_remediation_complete") else "Additional safe automatic execution remains planned.")
+    status = str(summary.get("automatic_remediation_status") or ("EXHAUSTED" if summary.get("automatic_remediation_complete") else "INCOMPLETE"))
+    lines.append(status)
+    lines.append("Further execution requires manual review or prior safe attempts did not persist." if status in {"EXHAUSTED", "UNKNOWN"} else "Additional safe automatic execution remains planned.")
     return "\n".join(lines)
 
 
@@ -210,10 +240,99 @@ def render_launchservices_outcome(outcome: LaunchServicesOutcome) -> str:
         lines.append(f"• Active {item.get('product_family')} generation")
     if not outcome.active_generations:
         lines.append("- none")
-    lines.extend(["", "Automatic remediation", "STATUS", "COMPLETE" if outcome.automatic_remediation_complete else "INCOMPLETE", "Reason", outcome.explanation, "", "Local Network", "Evidence", outcome.local_network_status["status"], "Reason", outcome.local_network_status["reason"], "", "Next manual actions"])
+    lines.extend(["", "Automatic remediation", "STATUS", outcome.automatic_remediation_status, "Reason", outcome.explanation, "", "Local Network", "Evidence", outcome.local_network_status["status"], "Reason", outcome.local_network_status["reason"], "", "Next manual actions"])
     for action in outcome.next_manual_actions:
         lines.append(action)
     return "\n".join(lines)
+
+
+def read_execute_plan_audit_history(path: Path | None) -> ExecutePlanAuditHistory | None:
+    if path is None:
+        return None
+    expanded = path.expanduser()
+    if not expanded.exists():
+        return ExecutePlanAuditHistory(by_generation={}, source=str(expanded))
+    by_generation: dict[str, str] = {}
+    for line in expanded.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("event") != "launchservices_execute_plan_run" or event.get("confirmed") is not True:
+            continue
+        status = str(event.get("final_verdict") or event.get("status") or "UNKNOWN")
+        generation_diff_value = event.get("generation_diff")
+        generation_diff = generation_diff_value if isinstance(generation_diff_value, dict) else {}
+        for generation_id in _audit_generation_ids(generation_diff.get("removed")):
+            by_generation[generation_id] = "attempted_removed"
+        no_change_state = "attempted_unknown" if status == "UNKNOWN" else "attempted_no_persistent_change"
+        for key in ("regenerated", "still_present", "persisted"):
+            for generation_id in _audit_generation_ids(generation_diff.get(key)):
+                by_generation[generation_id] = no_change_state
+        if status in {"NO_MUTATION", "MUTATED_BUT_REGENERATED", "MUTATION_FAILED"}:
+            for step in event.get("executed_steps", []):
+                if isinstance(step, dict) and isinstance(step.get("generation_id"), str):
+                    by_generation[step["generation_id"]] = "attempted_no_persistent_change"
+    return ExecutePlanAuditHistory(by_generation=by_generation, source=str(expanded))
+
+
+def _history_state_for_step(generation_id: str, safety: RemediationSafety, audit_history: ExecutePlanAuditHistory | None) -> str:
+    if safety == RemediationSafety.MANUAL_REVIEW_REQUIRED:
+        return "manual_review_required"
+    if audit_history is None:
+        return "eligible_not_attempted"
+    return audit_history.by_generation.get(generation_id, "eligible_not_attempted")
+
+
+def _history_state_for_blocked(state: GenerationOutcomeState) -> str:
+    if state == GenerationOutcomeState.BLOCKED_ACTIVE:
+        return "blocked_active"
+    if state == GenerationOutcomeState.BLOCKED_UNKNOWN:
+        return "blocked_unknown"
+    return "manual_review_required"
+
+
+def _automatic_status(plan_safe: list[dict[str, Any]]) -> str:
+    if not plan_safe:
+        return AutomaticRemediationStatus.EXHAUSTED.value
+    states = {str(item.get("history_state")) for item in plan_safe}
+    if "eligible_not_attempted" in states:
+        return AutomaticRemediationStatus.AVAILABLE.value
+    if "attempted_unknown" in states:
+        return AutomaticRemediationStatus.UNKNOWN.value
+    if states <= {"attempted_removed"}:
+        return AutomaticRemediationStatus.EXHAUSTED.value
+    if states & {"attempted_no_persistent_change", "attempted_removed"}:
+        return AutomaticRemediationStatus.EXHAUSTED.value
+    return AutomaticRemediationStatus.INCOMPLETE.value
+
+
+def _automatic_explanation(status: str) -> str:
+    if status == AutomaticRemediationStatus.AVAILABLE.value:
+        return "Additional PLAN_ONLY_SAFE generations remain eligible_not_attempted; safe automatic execution remains available."
+    if status == AutomaticRemediationStatus.UNKNOWN.value:
+        return "PLAN_ONLY_SAFE generations were attempted but persistent removal is unknown. Do not report them as simply eligible."
+    if status == AutomaticRemediationStatus.EXHAUSTED.value:
+        return "Only manual-review generations remain or prior PLAN_ONLY_SAFE attempts produced no persistent change. No additional safe automatic execution exists."
+    return "Automatic remediation is incomplete because outcome history is insufficient."
+
+
+def _local_network_reason(status: str, has_remaining_evidence: bool) -> str:
+    if status == AutomaticRemediationStatus.AVAILABLE.value:
+        return "Persistent LaunchServices evidence remains and safe automatic remediation is still available."
+    if status == AutomaticRemediationStatus.UNKNOWN.value:
+        return "Persistent LaunchServices evidence remains after an audit history with unknown persistent mutation outcome."
+    if status == AutomaticRemediationStatus.EXHAUSTED.value and has_remaining_evidence:
+        return "Persistent LaunchServices evidence remains after safe automatic remediation reached its limit."
+    return "No remaining LaunchServices outcome evidence requires automatic execution."
+
+
+def _audit_generation_ids(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted(str(item) for item in value if isinstance(item, str) and item)
 
 
 def _generation_stub(generation_id: str, state: GenerationOutcomeState) -> dict[str, Any]:

@@ -220,7 +220,7 @@ def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_p
     assert report_json["trace"]["available"] is True
     assert (bundle_dir / "report.txt").read_text().startswith("Local Network diagnostic report")
     command_json = json.loads((bundle_dir / "command.json").read_text())
-    assert list(command_json) == ["command", "branch", "trace", "bundle_schema_version"]
+    assert list(command_json) == ["command", "branch", "trace", "launchservices_audit_log", "bundle_schema_version"]
     assert command_json["branch"] == "manual-empty-trash-reboot"
     environment_json = json.loads((bundle_dir / "environment.json").read_text())
     assert list(environment_json) == ["python_version", "platform", "system", "machine"]

@@ -11,7 +11,7 @@ from macos_state_explorer.diagnostics.framework import build_support_bundle
 from macos_state_explorer.diagnostics.local_network.verification import LocalNetworkVerification, verify_local_network
 from macos_state_explorer.launchservices.analysis import LaunchServicesAnalysis, analysis_from_snapshot_payload, analysis_records_from_snapshot_payload
 from macos_state_explorer.launchservices.generations import analyze_generations
-from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, render_launchservices_outcome, render_outcome_summary
+from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, read_execute_plan_audit_history, render_launchservices_outcome, render_outcome_summary
 from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 
@@ -23,6 +23,7 @@ class LocalNetworkReport:
     verification: LocalNetworkVerification
     trace_analysis: dict[str, Any] | None = None
     launchservices_analysis: LaunchServicesAnalysis | None = None
+    launchservices_audit_log: Path | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         solution_json = self.solution.to_json_dict()
@@ -141,6 +142,7 @@ def write_local_network_support_bundle(
     *,
     branch_id: str,
     trace_path: Path | None = None,
+    launchservices_audit_log: Path | None = None,
 ) -> Path:
     bundle = build_support_bundle(
         bundle_path,
@@ -150,6 +152,7 @@ def write_local_network_support_bundle(
             "command": "mse report local-network --bundle",
             "branch": branch_id,
             "trace": _trace_metadata(trace_path),
+            "launchservices_audit_log": _trace_metadata(launchservices_audit_log),
             "bundle_schema_version": 1,
         },
         environment=_environment_summary(),
@@ -159,16 +162,16 @@ def write_local_network_support_bundle(
         (bundle / "launchservices-analysis.json").write_text(
             json.dumps(report.launchservices_analysis.to_json_dict(), indent=2, ensure_ascii=False) + "\n"
         )
-    outcome = _report_outcome(report)
+    outcome = _report_outcome(report, launchservices_audit_log or report.launchservices_audit_log)
     (bundle / "outcome.json").write_text(json.dumps(outcome.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "outcome.txt").write_text(render_launchservices_outcome(outcome) + "\n")
     return bundle
 
 
-def _report_outcome(report: LocalNetworkReport):
+def _report_outcome(report: LocalNetworkReport, audit_log: Path | None = None):
     payload = next((observation.payload for observation in report.snapshot.observations if observation.collector == "launchservices"), {})
     payload = payload if isinstance(payload, dict) else {}
-    return build_launchservices_outcome(analyze_generations(analysis_records_from_snapshot_payload(payload)))
+    return build_launchservices_outcome(analyze_generations(analysis_records_from_snapshot_payload(payload)), audit_history=read_execute_plan_audit_history(audit_log))
 
 
 def build_local_network_report(
@@ -176,8 +179,9 @@ def build_local_network_report(
     *,
     trace_analysis: dict[str, Any] | None = None,
     branch_id: str = "manual-empty-trash-reboot",
+    launchservices_audit_log: Path | None = None,
 ) -> LocalNetworkReport:
-    solution = build_local_network_solution(snapshot, trace_analysis=trace_analysis)
+    solution = build_local_network_solution(snapshot, trace_analysis=trace_analysis, launchservices_audit_log=launchservices_audit_log)
     verification = verify_local_network(snapshot, expected_branch_id=branch_id, trace_analysis=trace_analysis)
     payload = next((observation.payload for observation in snapshot.observations if observation.collector == "launchservices"), {})
     return LocalNetworkReport(
@@ -185,6 +189,7 @@ def build_local_network_report(
         trace_analysis=trace_analysis,
         solution=solution,
         verification=verification,
+        launchservices_audit_log=launchservices_audit_log,
         launchservices_analysis=analysis_from_snapshot_payload(payload if isinstance(payload, dict) else {}),
     )
 

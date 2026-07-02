@@ -9,7 +9,8 @@ from macos_state_explorer.cli import app
 from macos_state_explorer.core.model import Observation, Snapshot
 from macos_state_explorer.launchservices.generations import analyze_generations
 from macos_state_explorer.launchservices.models import LaunchServicesRecord, LaunchServicesStatus
-from macos_state_explorer.launchservices.outcome import GenerationOutcomeState, build_launchservices_outcome
+from macos_state_explorer.launchservices.outcome import GenerationOutcomeState, build_launchservices_outcome, read_execute_plan_audit_history
+from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation
 from macos_state_explorer.reports.local_network import build_local_network_report, write_local_network_support_bundle
 
 
@@ -31,6 +32,23 @@ def outcome_records(*, include_safe: bool = False) -> list[LaunchServicesRecord]
     if include_safe:
         records.append(record("/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/148.0.7778.216/Helpers/Google Chrome Helper.app", bundle_id="com.google.Chrome.helper", name="Google Chrome Helper", version="148.0.7778.216"))
     return records
+
+
+def write_execute_plan_audit(path: Path, *, status: str, generation_id: str, diff_key: str = "regenerated") -> Path:
+    event = {
+        "event": "launchservices_execute_plan_run",
+        "command": "launchservices execute-plan",
+        "confirmed": True,
+        "status": status,
+        "final_verdict": status,
+        "generation_diff": {"removed": [], "added": [], "persisted": [], "regenerated": [], "still_present": []},
+        "executed_step_count": 0,
+        "skipped_step_count": 0,
+        "errors": [],
+    }
+    event["generation_diff"][diff_key] = [generation_id]
+    path.write_text(json.dumps(event) + "\n")
+    return path
 
 
 def snapshot(records: list[LaunchServicesRecord]) -> Snapshot:
@@ -57,54 +75,106 @@ def test_outcome_engine_reports_no_safe_automatic_remediation_complete():
 
     payload = outcome.to_json_dict()
     assert payload["automatic_remediation_complete"] is True
+    assert payload["automatic_remediation_status"] == "EXHAUSTED"
     assert payload["local_network_status"]["status"] == "UNCHANGED"
     assert "Only manual-review generations remain" in payload["explanation"]
     assert "No automatic execution recommended." in payload["next_manual_actions"]
 
 
-def test_outcome_human_and_json_cli(monkeypatch):
-    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(outcome_records()))
+def test_plan_safe_without_audit_history_is_available_not_attempted():
+    outcome = build_launchservices_outcome(analyze_generations(outcome_records(include_safe=True)))
 
-    json_result = CliRunner().invoke(app, ["launchservices", "outcome", "--json"])
-    human_result = CliRunner().invoke(app, ["launchservices", "outcome"])
+    payload = outcome.to_json_dict()
+    plan_safe = [item for item in payload["remaining_generations"] if item["state"] == GenerationOutcomeState.REMAINING_PLAN_SAFE.value]
+    assert payload["automatic_remediation_status"] == "AVAILABLE"
+    assert plan_safe
+    assert {item["history_state"] for item in plan_safe} == {"eligible_not_attempted"}
+    assert "safe automatic execution remains available" in payload["explanation"]
+
+
+def test_plan_safe_attempted_without_persistent_removal_is_not_plain_incomplete(tmp_path):
+    analysis = analyze_generations(outcome_records(include_safe=True))
+    safe_id = next(step.generation_id for step in plan_launchservices_remediation(analysis).steps if step.safety.value == "PLAN_ONLY_SAFE")
+    audit = write_execute_plan_audit(tmp_path / "audit.jsonl", status="UNKNOWN", generation_id=safe_id, diff_key="still_present")
+
+    outcome = build_launchservices_outcome(analysis, audit_history=read_execute_plan_audit_history(audit))
+    payload = outcome.to_json_dict()
+    plan_safe = [item for item in payload["remaining_generations"] if item["generation_id"] == safe_id][0]
+
+    assert payload["automatic_remediation_status"] == "UNKNOWN"
+    assert payload["automatic_remediation_complete"] is False
+    assert plan_safe["history_state"] == "attempted_unknown"
+    assert "attempted but persistent removal is unknown" in payload["explanation"]
+
+
+def test_plan_safe_attempted_no_persistent_change_is_exhausted(tmp_path):
+    analysis = analyze_generations(outcome_records(include_safe=True))
+    safe_id = next(step.generation_id for step in plan_launchservices_remediation(analysis).steps if step.safety.value == "PLAN_ONLY_SAFE")
+    audit = write_execute_plan_audit(tmp_path / "audit.jsonl", status="MUTATED_BUT_REGENERATED", generation_id=safe_id)
+
+    outcome = build_launchservices_outcome(analysis, audit_history=read_execute_plan_audit_history(audit))
+    payload = outcome.to_json_dict()
+    plan_safe = [item for item in payload["remaining_generations"] if item["generation_id"] == safe_id][0]
+
+    assert payload["automatic_remediation_status"] == "EXHAUSTED"
+    assert plan_safe["history_state"] == "attempted_no_persistent_change"
+    assert "No additional safe automatic execution exists" in payload["explanation"]
+
+
+def test_outcome_human_and_json_cli(monkeypatch, tmp_path):
+    snap = snapshot(outcome_records(include_safe=True))
+    analysis = analyze_generations(outcome_records(include_safe=True))
+    safe_id = next(step.generation_id for step in plan_launchservices_remediation(analysis).steps if step.safety.value == "PLAN_ONLY_SAFE")
+    audit = write_execute_plan_audit(tmp_path / "audit.jsonl", status="UNKNOWN", generation_id=safe_id, diff_key="still_present")
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snap)
+
+    json_result = CliRunner().invoke(app, ["launchservices", "outcome", "--audit-log", str(audit), "--json"])
+    human_result = CliRunner().invoke(app, ["launchservices", "outcome", "--audit-log", str(audit)])
 
     assert json_result.exit_code == 0
     payload = json.loads(json_result.stdout)
     assert list(payload)[:5] == ["command", "outcome_id", "timestamp", "product_families", "completed_generations"]
-    assert payload["automatic_remediation_complete"] is True
+    assert payload["automatic_remediation_status"] == "UNKNOWN"
+    assert payload["automatic_remediation_complete"] is False
     assert human_result.exit_code == 0
     assert "LaunchServices remediation outcome" in human_result.stdout
     assert "Automatic remediation" in human_result.stdout
-    assert "COMPLETE" in human_result.stdout
-    assert "No automatic execution recommended." in human_result.stdout
+    assert "UNKNOWN" in human_result.stdout
+    assert "attempted but persistent removal is unknown" in human_result.stdout
 
 
-def test_local_network_solution_and_report_include_outcome_summary(monkeypatch):
-    snap = snapshot(outcome_records())
+def test_local_network_solution_and_report_include_outcome_summary(monkeypatch, tmp_path):
+    snap = snapshot(outcome_records(include_safe=True))
+    analysis = analyze_generations(outcome_records(include_safe=True))
+    safe_id = next(step.generation_id for step in plan_launchservices_remediation(analysis).steps if step.safety.value == "PLAN_ONLY_SAFE")
+    audit = write_execute_plan_audit(tmp_path / "audit.jsonl", status="MUTATED_BUT_REGENERATED", generation_id=safe_id)
     monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snap)
 
-    solve_result = CliRunner().invoke(app, ["solve", "local-network", "--json"])
-    report = build_local_network_report(snap)
+    solve_result = CliRunner().invoke(app, ["solve", "local-network", "--audit-log", str(audit), "--json"])
+    report = build_local_network_report(snap, launchservices_audit_log=audit)
     report_payload = report.to_json_dict()
 
     assert solve_result.exit_code == 0
     solve_payload = json.loads(solve_result.stdout)
     assert "launchservices_outcome_summary" in solve_payload
-    assert solve_payload["launchservices_outcome_summary"]["automatic_remediation_complete"] is True
+    assert solve_payload["launchservices_outcome_summary"]["automatic_remediation_status"] == "EXHAUSTED"
     assert "launchservices_outcome_summary" in report_payload
-    assert report_payload["launchservices_outcome_summary"]["automatic_remediation_complete"] is True
-    assert "Automatic LaunchServices remediation" in report.render_text()
+    assert report_payload["launchservices_outcome_summary"]["automatic_remediation_status"] == "EXHAUSTED"
+    assert "EXHAUSTED" in report.render_text()
 
 
 def test_support_bundle_includes_outcome_artifacts(tmp_path):
-    report = build_local_network_report(snapshot(outcome_records()))
-    bundle = write_local_network_support_bundle(report, tmp_path / "bundle", branch_id="manual-empty-trash-reboot")
+    analysis = analyze_generations(outcome_records(include_safe=True))
+    safe_id = next(step.generation_id for step in plan_launchservices_remediation(analysis).steps if step.safety.value == "PLAN_ONLY_SAFE")
+    audit = write_execute_plan_audit(tmp_path / "audit.jsonl", status="UNKNOWN", generation_id=safe_id, diff_key="still_present")
+    report = build_local_network_report(snapshot(outcome_records(include_safe=True)), launchservices_audit_log=audit)
+    bundle = write_local_network_support_bundle(report, tmp_path / "bundle", branch_id="manual-empty-trash-reboot", launchservices_audit_log=audit)
 
     assert (bundle / "outcome.json").exists()
     assert (bundle / "outcome.txt").exists()
     payload = json.loads((bundle / "outcome.json").read_text())
-    assert payload["automatic_remediation_complete"] is True
-    assert "LaunchServices remediation outcome" in (bundle / "outcome.txt").read_text()
+    assert payload["automatic_remediation_status"] == "UNKNOWN"
+    assert "UNKNOWN" in (bundle / "outcome.txt").read_text()
 
 
 def test_bundle_diff_includes_outcome_comparison(tmp_path):
@@ -112,14 +182,14 @@ def test_bundle_diff_includes_outcome_comparison(tmp_path):
     after = tmp_path / "after"
     before.mkdir()
     after.mkdir()
-    (before / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "launchservices_outcome_summary": {"completed": 0, "remaining": 1, "blocked": 1, "automatic_remediation_complete": False}}))
-    (after / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "launchservices_outcome_summary": {"completed": 1, "remaining": 0, "blocked": 2, "automatic_remediation_complete": True}}))
+    (before / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "launchservices_outcome_summary": {"completed": 0, "remaining": 1, "blocked": 1, "automatic_remediation_complete": False, "automatic_remediation_status": "AVAILABLE"}}))
+    (after / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "launchservices_outcome_summary": {"completed": 1, "remaining": 0, "blocked": 2, "automatic_remediation_complete": True, "automatic_remediation_status": "EXHAUSTED"}}))
 
     result = CliRunner().invoke(app, ["diff", "bundles", str(before), str(after), "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["outcome_diff"] == {"completed": 1, "remaining": -1, "newly_blocked": 1, "resolved": 1}
+    assert payload["outcome_diff"] == {"completed": 1, "remaining": -1, "newly_blocked": 1, "resolved": 1, "status_before": "AVAILABLE", "status_after": "EXHAUSTED"}
 
 
 def test_phase1_lifecycle_outcome_documentation_exists():
