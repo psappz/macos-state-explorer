@@ -22,6 +22,7 @@ from macos_state_explorer.launchservices.producer_evidence import build_launchse
 from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, local_network_provenance_summary
 from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation, remediation_plan_summary
 from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, trace_correlation_summary
+from macos_state_explorer.tracers.local_network import build_trace_timeline, trace_timeline_summary
 
 SolverEvidence = LocalNetworkEvidence
 LocalNetworkSolution = DiagnosticSolution
@@ -52,6 +53,7 @@ def build_local_network_solution(
         launchservices_provenance_summary=_launchservices_provenance_summary(snapshot),
         launchservices_producer_evidence_summary=_launchservices_producer_evidence_summary(snapshot, trace_analysis),
         trace_correlation_summary=_trace_correlation_summary(trace_analysis),
+        trace_timeline_summary=_trace_timeline_summary(trace_analysis),
     )
 
 
@@ -95,6 +97,10 @@ def _launchservices_producer_evidence_summary(snapshot: Snapshot, trace_analysis
 
 def _trace_correlation_summary(trace_analysis: dict[str, Any] | None = None) -> dict[str, Any]:
     return trace_correlation_summary(build_trace_correlation_evidence(trace_analysis))
+
+
+def _trace_timeline_summary(trace_analysis: dict[str, Any] | None = None) -> dict[str, Any]:
+    return trace_timeline_summary(build_trace_timeline(trace_analysis))
 
 
 def load_trace_analysis(path: Path | None) -> dict[str, Any] | None:

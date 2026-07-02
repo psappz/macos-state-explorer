@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import html
 import json
 import re
@@ -42,6 +43,11 @@ SIGNALS = [
         "LaunchServices cache/store access",
     ),
     (
+        "system_settings_privacy",
+        ("system settings", "privacy ui"),
+        "System Settings Privacy UI activity",
+    ),
+    (
         "tcc_localnetwork",
         ("tcc", "ktccservicelocalnetwork"),
         "TCC Local Network authorization activity",
@@ -57,6 +63,20 @@ SIGNALS = [
         "RunningBoard process/app lifecycle activity",
     ),
 ]
+
+
+@dataclass(frozen=True)
+class TraceTimeline:
+    events: list[dict[str, Any]]
+    summary: dict[str, Any]
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "command": "trace timeline",
+            "event_count": len(self.events),
+            "summary": dict(self.summary),
+            "events": list(self.events),
+        }
 
 
 def _start(cmd: list[str], path: Path) -> subprocess.Popen:
@@ -134,11 +154,13 @@ def analyze_trace(out: Path) -> dict[str, Any]:
 
     paths: dict[str, dict[str, Any]] = {}
     timeline_events = []
+    normalized_events = []
     base_date = _base_date(texts.values())
     for name, text in texts.items():
         for line in text.splitlines():
             signals = _signals_for_line(line)
             if signals:
+                normalized_events.extend(_normalized_events_for_line(name, line, signals, base_date))
                 timeline_events.extend(_timeline_events_for_line(name, line, signals, base_date))
             for match in PATH_RE.findall(line):
                 path = match.rstrip(":,);")
@@ -163,6 +185,7 @@ def analyze_trace(out: Path) -> dict[str, Any]:
     timeline_events = sorted(timeline_events, key=lambda event: (event["timestamp_sort"], event["source_file"]))[:500]
     for event in timeline_events:
         event.pop("timestamp_sort", None)
+    normalized_events = sorted(normalized_events, key=lambda event: (event["timestamp_sort"], event["source_file"], event["process"], event["operation"]))[:1000]
 
     return {
         "created_at": time.time(),
@@ -170,6 +193,8 @@ def analyze_trace(out: Path) -> dict[str, Any]:
         "signal_counts": _signal_counts(timeline_events),
         "correlation_summary": _correlation_summary(timeline_events),
         "timeline_events": timeline_events,
+        "normalized_events": normalized_events,
+        "trace_timeline_summary": trace_timeline_summary(build_trace_timeline({"normalized_events": normalized_events})),
         "candidate_paths": path_list[:300],
     }
 
@@ -184,6 +209,8 @@ def trace_json_payload(out: Path, analysis: dict[str, Any]) -> dict[str, Any]:
             "signal_counts": analysis.get("signal_counts", {}),
             "correlation_summary": analysis.get("correlation_summary", []),
             "timeline_events": analysis.get("timeline_events", []),
+            "normalized_events": analysis.get("normalized_events", []),
+            "trace_timeline_summary": analysis.get("trace_timeline_summary", {}),
         },
         "signals": analysis.get("correlation_summary", []),
         "candidate_paths": analysis.get("candidate_paths", []),
@@ -245,11 +272,129 @@ def render_trace_html(analysis: dict[str, Any]) -> str:
     )
 
 
+def build_trace_timeline(analysis: dict[str, Any] | None) -> TraceTimeline:
+    analysis = analysis if isinstance(analysis, dict) else {}
+    raw_events = analysis.get("normalized_events") or analysis.get("timeline_events") or []
+    events = [_normalize_timeline_event(event) for event in raw_events if isinstance(event, dict)]
+    events = sorted(events, key=lambda event: (event["timestamp_sort"], event["source_file"], event["process"], event["operation"]))
+    return TraceTimeline(events=events, summary=trace_timeline_summary_from_events(events))
+
+
+def trace_timeline_summary(timeline: TraceTimeline) -> dict[str, Any]:
+    return timeline.summary
+
+
+def trace_timeline_summary_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    processes: dict[str, int] = {}
+    operations: dict[str, int] = {}
+    sources: dict[str, int] = {}
+    highest_resolution = "none"
+    for event in events:
+        if event["process"]:
+            processes[event["process"]] = processes.get(event["process"], 0) + 1
+        if event["operation"]:
+            operations[event["operation"]] = operations.get(event["operation"], 0) + 1
+        if event["source"]:
+            sources[event["source"]] = sources.get(event["source"], 0) + 1
+        if "." in str(event["timestamp"]):
+            highest_resolution = "subsecond"
+    return {
+        "event_count": len(events),
+        "processes": dict(sorted(processes.items())),
+        "operations": dict(sorted(operations.items())),
+        "sources": dict(sorted(sources.items())),
+        "highest_timestamp_resolution": highest_resolution,
+    }
+
+
+def render_trace_timeline(timeline: TraceTimeline) -> str:
+    lines = ["High-Fidelity Trace Timeline"]
+    if not timeline.events:
+        return "\n".join([*lines, "- no events"])
+    for index, event in enumerate(timeline.events):
+        if index:
+            lines.append("↓")
+        detail = event["operation"] or event["signal"] or "event"
+        path = f" {event['file_path']}" if event.get("file_path") else ""
+        pid = f" pid={event['pid']}" if event.get("pid") is not None else ""
+        lines.append(f"{event['timestamp']} {event['process']}{pid} — {detail}{path}")
+    return "\n".join(lines)
+
+
+def _normalize_timeline_event(event: dict[str, Any]) -> dict[str, Any]:
+    timestamp = str(event.get("timestamp", ""))
+    timestamp_sort = str(event.get("timestamp_sort") or _timestamp_sort(timestamp, str(event.get("raw_reference") or event.get("line", "")), "9999-12-31"))
+    source_file = str(event.get("source_file") or event.get("source") or "")
+    return {
+        "timestamp": timestamp,
+        "timestamp_sort": timestamp_sort,
+        "process": str(event.get("process", "")),
+        "pid": event.get("pid"),
+        "parent_pid": event.get("parent_pid"),
+        "thread_id": event.get("thread_id"),
+        "executable_path": str(event.get("executable_path", "")),
+        "subsystem": str(event.get("subsystem", "")),
+        "source": str(event.get("source") or _source_kind(source_file)),
+        "source_file": source_file,
+        "file_path": str(event.get("file_path") or _first_path(event.get("paths", [])) or ""),
+        "operation": str(event.get("operation") or _operation_for_line(str(event.get("raw_reference") or event.get("line", "")))),
+        "signal": str(event.get("signal", "")),
+        "confidence": float(event.get("confidence", 0.5)),
+        "raw_reference": str(event.get("raw_reference") or event.get("line", ""))[:1000],
+    }
+
+
+def _normalized_events_for_line(source_file: str, line: str, signals: list[tuple[str, str]], base_date: str) -> list[dict[str, Any]]:
+    timestamp = _timestamp_for_line(line)
+    process = _process_for_line(line)
+    pid, thread_id = _pid_thread_for_line(line, process)
+    paths = [path.rstrip(":,);") for path in PATH_RE.findall(line)]
+    file_path = _first_path(paths) or ""
+    operation = _operation_for_line(line)
+    source = _source_kind(source_file)
+    common = {
+        "timestamp": timestamp,
+        "timestamp_sort": _timestamp_sort(timestamp, line, base_date),
+        "process": process,
+        "pid": pid,
+        "parent_pid": _int_match(line, r"\bppid[=:](\d+)\b"),
+        "thread_id": thread_id,
+        "executable_path": _executable_for_line(line),
+        "subsystem": _subsystem_for_line(line),
+        "source": source,
+        "source_file": source_file,
+        "file_path": file_path,
+        "operation": operation,
+        "signal": _primary_signal(signals, process, file_path, line),
+        "confidence": _confidence_for_event(source, process, pid, file_path, operation),
+        "raw_reference": line[:1000],
+        "observed_signals": [signal for signal, _description in signals],
+    }
+    return [common]
+
+
+def _primary_signal(signals: list[tuple[str, str]], process: str, file_path: str, line: str) -> str:
+    signal_names = [signal for signal, _description in signals]
+    lowered = line.lower()
+    if file_path.endswith(".csstore") or ".csstore" in lowered:
+        return "launchservices_csstore"
+    if process == "runningboardd":
+        return "runningboard"
+    if process == "System Settings":
+        return "system_settings_privacy" if "system_settings_privacy" in signal_names else signal_names[0]
+    if process == "SecurityPrivacyExtension":
+        return "securityprivacyextension"
+    return signal_names[0] if signal_names else "unknown"
+
+
 def _signals_for_line(line: str) -> list[tuple[str, str]]:
     lowered = line.lower()
     matches = []
     for signal, terms, description in SIGNALS:
-        if any(term in lowered for term in terms):
+        if signal == "system_settings_privacy":
+            if all(term in lowered for term in terms):
+                matches.append((signal, description))
+        elif any(term in lowered for term in terms):
             matches.append((signal, description))
     return matches
 
@@ -316,6 +461,92 @@ def _process_for_line(line: str) -> str:
         if process.lower() in lowered:
             return process
     return ""
+
+
+def _source_kind(source_file: str) -> str:
+    if source_file == "fs_usage.txt":
+        return "fs_usage"
+    if source_file == "log_stream.txt":
+        return "log_stream"
+    if source_file == "lsof_loop.txt":
+        return "lsof"
+    if source_file == "process_loop.txt":
+        return "process"
+    if source_file == "launchctl_loop.txt":
+        return "launchctl"
+    return source_file.rsplit(".", 1)[0] if source_file else "unknown"
+
+
+def _first_path(paths: Any) -> str | None:
+    if isinstance(paths, list):
+        for path in paths:
+            if isinstance(path, str) and path:
+                return path
+    return None
+
+
+def _pid_thread_for_line(line: str, process: str) -> tuple[int | None, int | None]:
+    if process:
+        escaped = re.escape(process)
+        bracket = re.search(rf"{escaped}\[(\d+)(?::(\d+))?\]", line)
+        if bracket:
+            return int(bracket.group(1)), int(bracket.group(2)) if bracket.group(2) else None
+        dotted = re.search(rf"{escaped}\.(\d+)\b", line)
+        if dotted:
+            return int(dotted.group(1)), None
+    return _int_match(line, r"\bpid[=:](\d+)\b"), _int_match(line, r"\b(?:tid|thread)[=:](\d+)\b")
+
+
+def _int_match(line: str, pattern: str) -> int | None:
+    match = re.search(pattern, line, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _executable_for_line(line: str) -> str:
+    match = re.search(r"\bexecutable=([^\s]+(?:\sSettings\.app/Contents/MacOS/System\sSettings)?)", line)
+    return match.group(1).strip('"') if match else ""
+
+
+def _subsystem_for_line(line: str) -> str:
+    match = re.search(r"\bsubsystem[=:]([^\s]+)", line)
+    return match.group(1).strip('"') if match else ""
+
+
+def _operation_for_line(line: str) -> str:
+    explicit = re.search(r"\boperation[=:]([A-Za-z0-9_().-]+)", line)
+    if explicit:
+        return _normalize_operation(explicit.group(1))
+    lowered = line.lower()
+    for candidate in ["open", "read", "stat64", "stat", "access", "mmap", "close", "launch", "terminate", "registration"]:
+        if re.search(rf"\b{re.escape(candidate)}(?:\(\))?\b", lowered):
+            return _normalize_operation(candidate)
+    if "opened" in lowered or "open" in lowered:
+        return "open"
+    if ".csstore" in lowered:
+        return "cache access"
+    return "event"
+
+
+def _normalize_operation(operation: str) -> str:
+    operation = operation.lower().removesuffix("()")
+    if operation == "stat64":
+        return "stat"
+    return operation
+
+
+def _confidence_for_event(source: str, process: str, pid: int | None, file_path: str, operation: str) -> float:
+    score = 0.45
+    if source in {"fs_usage", "log_stream"}:
+        score += 0.15
+    if process:
+        score += 0.1
+    if pid is not None:
+        score += 0.1
+    if file_path:
+        score += 0.1
+    if operation and operation != "event":
+        score += 0.1
+    return min(score, 0.95)
 
 
 def _signal_counts(events: list[dict[str, Any]]) -> dict[str, int]:

@@ -13,6 +13,7 @@ Phase 1 intentionally separates the LaunchServices workflow into deterministic r
 7. registration provenance: explain who likely produced each relevant registration, why it persists, what may regenerate it, and which consumers can use it.
 8. producer evidence: acquire observed producer/consumer signals separately from modeled provenance before any further repair milestone is considered.
 9. trace correlation: distinguish isolated observations from events that share a supported time-window/process context.
+10. high-fidelity trace acquisition: normalize timestamp, process, PID, thread, executable, subsystem, source, path, operation, confidence, and raw reference fields for descriptive timelines.
 
 ## Why outcome is pure analysis
 
@@ -58,6 +59,12 @@ The repository remains `macos-state-explorer`; WASP Prism is the future public p
 `mse trace correlate <trace-dir>` is pure analysis that asks whether observed trace events can be correlated, not just whether they happened. It preserves three layers: observed signals, supported correlations, and cautious inferences. Two observations are never promoted to a correlation unless the trace supplies supporting evidence such as a shared process and same time window.
 
 Trace correlation is used by Local Network summaries and support bundles as `trace-correlation.json` and `trace-correlation.txt`, with bundle diff support for added, removed, or changed correlations. This investigation remains scoped to the Chrome Local Network reference case and does not add repair, planner, mutation, or new Diagnostic Engine behavior.
+
+## High-Fidelity Trace Acquisition investigation
+
+`mse trace timeline <trace-dir>` is descriptive evidence acquisition. It normalizes existing trace artifacts into a deterministic timeline schema with timestamp, process, PID, parent PID, thread ID, executable path, subsystem, source, file path, operation, signal, confidence, and raw reference fields where the source supports them.
+
+The timeline does not change diagnosis, repair ranking, planner behavior, or mutation scope. Its purpose is to provide higher-resolution evidence for later temporal/process correlation attempts. Local Network summaries include a compact timeline summary, support bundles include `trace-timeline.json` and `trace-timeline.txt`, and bundle diff reports Trace Timeline Diff.
 
 ## Manual-review terminal state
 

@@ -38,7 +38,7 @@ from macos_state_explorer.reports.launchservices_html import write_launchservice
 from macos_state_explorer.reports.local_network import build_local_network_report, write_local_network_support_bundle
 from macos_state_explorer.solver.launchservices import build_launchservices_solution
 from macos_state_explorer.solver.local_network import build_local_network_solution, load_trace_analysis
-from macos_state_explorer.tracers.local_network import trace_json_payload, trace_local_network
+from macos_state_explorer.tracers.local_network import build_trace_timeline, render_trace_timeline, trace_json_payload, trace_local_network
 from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, render_trace_correlation_evidence
 
 app = typer.Typer(no_args_is_help=True)
@@ -674,6 +674,18 @@ def trace_correlate_cmd(
         console.print(render_trace_correlation_evidence(evidence), markup=False)
 
 
+@trace_app.command("timeline")
+def trace_timeline_cmd(
+    trace: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
+    timeline = build_trace_timeline(load_trace_analysis(trace))
+    if json_output:
+        typer.echo(json_module.dumps(timeline.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_trace_timeline(timeline), markup=False)
+
+
 @experiment_app.command("local-network")
 def experiment_local_network_cmd(out: Path):
     experiment_local_network(out.expanduser())
@@ -873,7 +885,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "trace_correlation_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -894,6 +906,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "provenance_diff": _bundle_provenance_diff(before_report, after_report),
         "producer_evidence_diff": _bundle_producer_evidence_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
+        "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
     }
 
@@ -1036,6 +1049,25 @@ def _correlation_strength(summary: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def _bundle_trace_timeline_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("trace_timeline_summary")
+    after_value = after_report.get("trace_timeline_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    before_ops = before.get("operations") if isinstance(before.get("operations"), dict) else {}
+    after_ops = after.get("operations") if isinstance(after.get("operations"), dict) else {}
+    before_processes = before.get("processes") if isinstance(before.get("processes"), dict) else {}
+    after_processes = after.get("processes") if isinstance(after.get("processes"), dict) else {}
+    return {
+        "added_events": max(0, int(after.get("event_count", 0)) - int(before.get("event_count", 0))),
+        "removed_events": max(0, int(before.get("event_count", 0)) - int(after.get("event_count", 0))),
+        "added_operations": sorted(set(after_ops) - set(before_ops)),
+        "removed_operations": sorted(set(before_ops) - set(after_ops)),
+        "added_processes": sorted(set(after_processes) - set(before_processes)),
+        "removed_processes": sorted(set(before_processes) - set(after_processes)),
+    }
+
+
 def _sorted_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -1050,6 +1082,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     provenance = diff.get("provenance_diff", {})
     producer_evidence = diff.get("producer_evidence_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
+    trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
         "Support bundle diff",
         f"Before: {diff['before']['path']}",
@@ -1089,6 +1122,12 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",
         f"- Removed correlations: {', '.join(trace_correlation.get('removed_correlations', [])) if trace_correlation.get('removed_correlations') else 'none'}",
         f"- Changed strength: {', '.join(trace_correlation.get('changed_strength', [])) if trace_correlation.get('changed_strength') else 'none'}",
+        "",
+        "Trace Timeline Diff",
+        f"- Added events: {trace_timeline.get('added_events', 0)}",
+        f"- Removed events: {trace_timeline.get('removed_events', 0)}",
+        f"- Added operations: {', '.join(trace_timeline.get('added_operations', [])) if trace_timeline.get('added_operations') else 'none'}",
+        f"- Added processes: {', '.join(trace_timeline.get('added_processes', [])) if trace_timeline.get('added_processes') else 'none'}",
         "",
         "Changed fields",
         f"- {', '.join(diff['changed_fields']) if diff['changed_fields'] else 'none'}",

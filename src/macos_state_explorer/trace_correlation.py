@@ -145,7 +145,7 @@ def render_trace_correlation_summary(summary: dict[str, Any]) -> str:
 
 
 def _events(trace_analysis: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = trace_analysis.get("timeline_events", [])
+    raw = trace_analysis.get("normalized_events") or trace_analysis.get("timeline_events", [])
     if not isinstance(raw, list):
         return []
     events = [event for event in raw if isinstance(event, dict)]

@@ -17,6 +17,7 @@ from macos_state_explorer.launchservices.provenance import build_launchservices_
 from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, render_trace_correlation_evidence, render_trace_correlation_summary
+from macos_state_explorer.tracers.local_network import build_trace_timeline, render_trace_timeline
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,8 @@ class LocalNetworkReport:
             payload["launchservices_producer_evidence_summary"] = self.solution.launchservices_producer_evidence_summary
         if self.solution.trace_correlation_summary is not None:
             payload["trace_correlation_summary"] = self.solution.trace_correlation_summary
+        if self.solution.trace_timeline_summary is not None:
+            payload["trace_timeline_summary"] = self.solution.trace_timeline_summary
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -112,6 +115,8 @@ class LocalNetworkReport:
             lines.extend(["", render_producer_evidence_summary(payload["launchservices_producer_evidence_summary"])])
         if payload.get("trace_correlation_summary"):
             lines.extend(["", render_trace_correlation_summary(payload["trace_correlation_summary"])])
+        if payload.get("trace_timeline_summary"):
+            lines.extend(["", _render_trace_timeline_summary(payload["trace_timeline_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -201,6 +206,9 @@ def write_local_network_support_bundle(
     trace_correlation = _report_trace_correlation(effective_report)
     (bundle / "trace-correlation.json").write_text(json.dumps(trace_correlation.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "trace-correlation.txt").write_text(render_trace_correlation_evidence(trace_correlation) + "\n")
+    trace_timeline = _report_trace_timeline(effective_report)
+    (bundle / "trace-timeline.json").write_text(json.dumps(trace_timeline.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "trace-timeline.txt").write_text(render_trace_timeline(trace_timeline) + "\n")
     return bundle
 
 
@@ -222,6 +230,21 @@ def _report_producer_evidence(report: LocalNetworkReport):
 
 def _report_trace_correlation(report: LocalNetworkReport):
     return build_trace_correlation_evidence(report.trace_analysis)
+
+
+def _report_trace_timeline(report: LocalNetworkReport):
+    return build_trace_timeline(report.trace_analysis)
+
+
+def _render_trace_timeline_summary(summary: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "High-Fidelity Trace Timeline Summary",
+            f"- Events: {summary.get('event_count', 0)}",
+            f"- Processes: {', '.join((summary.get('processes') or {}).keys()) or 'none'}",
+            f"- Operations: {', '.join((summary.get('operations') or {}).keys()) or 'none'}",
+        ]
+    )
 
 
 def build_local_network_report(
@@ -270,6 +293,8 @@ def _trace_to_json(trace_analysis: dict[str, Any] | None) -> dict[str, Any]:
             "signal_counts": trace_analysis.get("signal_counts", {}),
             "correlation_summary": trace_analysis.get("correlation_summary", []),
             "timeline_events": trace_analysis.get("timeline_events", []),
+            "normalized_events": trace_analysis.get("normalized_events", []),
+            "trace_timeline_summary": trace_analysis.get("trace_timeline_summary", {}),
         },
         "signals": trace_analysis.get("correlation_summary", []),
         "candidate_paths": trace_analysis.get("candidate_paths", []),

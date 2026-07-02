@@ -505,6 +505,7 @@ class DiagnosticSolution:
     launchservices_provenance_summary: dict[str, Any] | None = None
     launchservices_producer_evidence_summary: dict[str, Any] | None = None
     trace_correlation_summary: dict[str, Any] | None = None
+    trace_timeline_summary: dict[str, Any] | None = None
 
     def render_text(self) -> str:
         primary = self.repair_plan[0]
@@ -542,6 +543,8 @@ class DiagnosticSolution:
             from macos_state_explorer.trace_correlation import render_trace_correlation_summary
 
             lines.extend(["", render_trace_correlation_summary(self.trace_correlation_summary)])
+        if self.trace_timeline_summary:
+            lines.extend(["", _render_trace_timeline_summary(self.trace_timeline_summary)])
 
         if self.rule_matches:
             lines.extend(["", "Rule explanation"])
@@ -606,7 +609,20 @@ class DiagnosticSolution:
             payload["launchservices_producer_evidence_summary"] = self.launchservices_producer_evidence_summary
         if self.trace_correlation_summary is not None:
             payload["trace_correlation_summary"] = self.trace_correlation_summary
+        if self.trace_timeline_summary is not None:
+            payload["trace_timeline_summary"] = self.trace_timeline_summary
         return payload
+
+
+def _render_trace_timeline_summary(summary: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "High-Fidelity Trace Timeline Summary",
+            f"- Events: {summary.get('event_count', 0)}",
+            f"- Processes: {', '.join((summary.get('processes') or {}).keys()) or 'none'}",
+            f"- Operations: {', '.join((summary.get('operations') or {}).keys()) or 'none'}",
+        ]
+    )
 
 
 EvidenceProvider = Callable[[Snapshot, dict[str, Any] | None], Sequence[DiagnosticEvidence]]

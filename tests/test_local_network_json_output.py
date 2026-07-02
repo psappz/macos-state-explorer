@@ -169,6 +169,8 @@ def test_trace_local_network_json_schema_and_order(monkeypatch, tmp_path):
         "signal_counts",
         "correlation_summary",
         "timeline_events",
+        "normalized_events",
+        "trace_timeline_summary",
     ]
     assert payload["signals"][0]["signal"] == "chrome_code_sign_clone"
     assert payload["next_action"] == {
