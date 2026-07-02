@@ -37,6 +37,7 @@ from macos_state_explorer.launchservices.remediation_plan import (
 from macos_state_explorer.networkextension_correlation import build_networkextension_correlation, render_networkextension_correlation
 from macos_state_explorer.networkextension_object_graph import build_networkextension_object_graph, render_networkextension_object_graph
 from macos_state_explorer.networkextension_raw_references import build_networkextension_raw_references, render_networkextension_raw_references
+from macos_state_explorer.networkextension_repair_candidates import build_networkextension_repair_candidates, render_networkextension_repair_candidates
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, render_networkextension_state
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
@@ -137,6 +138,19 @@ def networkextension_object_graph_command(
         typer.echo(json_module.dumps(object_graph.to_json_dict(), sort_keys=False))
     else:
         console.print(render_networkextension_object_graph(object_graph), markup=False)
+
+
+@networkextension_app.command("repair-candidates")
+def networkextension_repair_candidates_command(
+    root: list[Path] | None = typer.Option(None, "--root", help="Read-only NetworkExtension root or file to inspect; repeatable."),
+    json_output: bool = typer.Option(False, "--json", help="Emit deterministic JSON."),
+):
+    roots = root if root else default_networkextension_roots()
+    candidates = build_networkextension_repair_candidates(roots)
+    if json_output:
+        typer.echo(json_module.dumps(candidates.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_networkextension_repair_candidates(candidates), markup=False)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -983,7 +997,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "networkextension_object_graph_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "networkextension_object_graph_summary", "networkextension_repair_candidates_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -1010,6 +1024,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "networkextension_correlation_diff": _bundle_networkextension_correlation_diff(before_report, after_report),
         "networkextension_raw_references_diff": _bundle_networkextension_raw_references_diff(before_report, after_report),
         "networkextension_object_graph_diff": _bundle_networkextension_object_graph_diff(before_report, after_report),
+        "networkextension_repair_candidate_diff": _bundle_networkextension_repair_candidate_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1266,6 +1281,25 @@ def _bundle_networkextension_object_graph_diff(before_report: dict[str, Any], af
     }
 
 
+def _bundle_networkextension_repair_candidate_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("networkextension_repair_candidates_summary")
+    after_value = after_report.get("networkextension_repair_candidates_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    before_refs = set(_sorted_string_list(before.get("candidate_object_refs")))
+    after_refs = set(_sorted_string_list(after.get("candidate_object_refs")))
+    before_safety = before.get("safety_classifications") if isinstance(before.get("safety_classifications"), dict) else {}
+    after_safety = after.get("safety_classifications") if isinstance(after.get("safety_classifications"), dict) else {}
+    return {
+        "added_candidate_object_refs": sorted(after_refs - before_refs),
+        "removed_candidate_object_refs": sorted(before_refs - after_refs),
+        "changed_safety_classifications": sorted(set(before_safety) ^ set(after_safety) | {key for key in set(before_safety) & set(after_safety) if before_safety.get(key) != after_safety.get(key)}),
+        "duplicate_records_delta": int(after.get("duplicate_records", 0)) - int(before.get("duplicate_records", 0)),
+        "orphaned_records_delta": int(after.get("orphaned_records", 0)) - int(before.get("orphaned_records", 0)),
+        "code_sign_clone_only_records_delta": int(after.get("code_sign_clone_only_records", 0)) - int(before.get("code_sign_clone_only_records", 0)),
+    }
+
+
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("trace_correlation_summary")
     after_value = after_report.get("trace_correlation_summary")
@@ -1344,6 +1378,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     networkextension_correlation = diff.get("networkextension_correlation_diff", {})
     networkextension_raw_references = diff.get("networkextension_raw_references_diff", {})
     networkextension_object_graph = diff.get("networkextension_object_graph_diff", {})
+    networkextension_repair_candidates = diff.get("networkextension_repair_candidate_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1433,6 +1468,14 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Changed binding classifications: {', '.join(networkextension_object_graph.get('changed_binding_classifications', [])) if networkextension_object_graph.get('changed_binding_classifications') else 'none'}",
         f"- Changed safety classifications: {', '.join(networkextension_object_graph.get('changed_safety_classifications', [])) if networkextension_object_graph.get('changed_safety_classifications') else 'none'}",
         f"- Changed parent-chain summaries: {', '.join(networkextension_object_graph.get('changed_parent_chain_summaries', [])) if networkextension_object_graph.get('changed_parent_chain_summaries') else 'none'}",
+        "",
+        "NetworkExtension Repair Candidate Diff",
+        f"- Added candidate object refs: {', '.join(networkextension_repair_candidates.get('added_candidate_object_refs', [])) if networkextension_repair_candidates.get('added_candidate_object_refs') else 'none'}",
+        f"- Removed candidate object refs: {', '.join(networkextension_repair_candidates.get('removed_candidate_object_refs', [])) if networkextension_repair_candidates.get('removed_candidate_object_refs') else 'none'}",
+        f"- Changed safety classifications: {', '.join(networkextension_repair_candidates.get('changed_safety_classifications', [])) if networkextension_repair_candidates.get('changed_safety_classifications') else 'none'}",
+        f"- Duplicate records: {networkextension_repair_candidates.get('duplicate_records_delta', 0):+d}",
+        f"- Orphaned records: {networkextension_repair_candidates.get('orphaned_records_delta', 0):+d}",
+        f"- Code-sign-clone-only records: {networkextension_repair_candidates.get('code_sign_clone_only_records_delta', 0):+d}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",

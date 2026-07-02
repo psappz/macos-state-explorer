@@ -21,6 +21,7 @@ from macos_state_explorer.launchservices.remediation_plan import render_remediat
 from macos_state_explorer.networkextension_correlation import build_networkextension_correlation, networkextension_correlation_summary, render_networkextension_correlation, render_networkextension_correlation_summary
 from macos_state_explorer.networkextension_object_graph import build_networkextension_object_graph, networkextension_object_graph_summary, render_networkextension_object_graph, render_networkextension_object_graph_summary
 from macos_state_explorer.networkextension_raw_references import build_networkextension_raw_references, networkextension_raw_references_summary, render_networkextension_raw_references, render_networkextension_raw_references_summary
+from macos_state_explorer.networkextension_repair_candidates import build_networkextension_repair_candidates, networkextension_repair_candidates_summary, render_networkextension_repair_candidates, render_networkextension_repair_candidates_summary
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, networkextension_state_summary, render_networkextension_state, render_networkextension_state_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, render_trace_correlation_evidence, render_trace_correlation_summary
@@ -70,6 +71,7 @@ class LocalNetworkReport:
         payload["networkextension_correlation_summary"] = networkextension_correlation_summary(_report_networkextension_correlation(self))
         payload["networkextension_raw_references_summary"] = networkextension_raw_references_summary(_report_networkextension_raw_references())
         payload["networkextension_object_graph_summary"] = networkextension_object_graph_summary(_report_networkextension_object_graph())
+        payload["networkextension_repair_candidates_summary"] = networkextension_repair_candidates_summary(_report_networkextension_repair_candidates())
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -145,6 +147,8 @@ class LocalNetworkReport:
             lines.extend(["", render_networkextension_raw_references_summary(payload["networkextension_raw_references_summary"])])
         if payload.get("networkextension_object_graph_summary"):
             lines.extend(["", render_networkextension_object_graph_summary(payload["networkextension_object_graph_summary"])])
+        if payload.get("networkextension_repair_candidates_summary"):
+            lines.extend(["", render_networkextension_repair_candidates_summary(payload["networkextension_repair_candidates_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -258,6 +262,9 @@ def write_local_network_support_bundle(
     networkextension_object_graph = _report_networkextension_object_graph()
     (bundle / "networkextension-object-graph.json").write_text(json.dumps(networkextension_object_graph.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "networkextension-object-graph.txt").write_text(render_networkextension_object_graph(networkextension_object_graph) + "\n")
+    networkextension_repair_candidates = _report_networkextension_repair_candidates()
+    (bundle / "networkextension-repair-candidates.json").write_text(json.dumps(networkextension_repair_candidates.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "networkextension-repair-candidates.txt").write_text(render_networkextension_repair_candidates(networkextension_repair_candidates) + "\n")
     return bundle
 
 
@@ -320,6 +327,10 @@ def _report_networkextension_raw_references():
 
 def _report_networkextension_object_graph():
     return build_networkextension_object_graph(default_networkextension_roots())
+
+
+def _report_networkextension_repair_candidates():
+    return build_networkextension_repair_candidates(default_networkextension_roots())
 
 
 def _report_networkextension_correlation(report: LocalNetworkReport):

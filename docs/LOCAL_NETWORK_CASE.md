@@ -142,4 +142,23 @@ The decoder does not infer identity bindings unless the NSKeyedArchiver object g
 
 Support bundles include `networkextension-object-graph.json` and `networkextension-object-graph.txt`, and bundle diffs include `NetworkExtension Object Graph Diff` for decoded artifacts, referenced object indices, binding classifications, safety classifications, and parent-chain summaries.
 
+## NetworkExtension repair-candidate analysis
+
+`mse networkextension repair-candidates` is still strictly read-only. It does not repair anything and does not recommend automatic deletion. It evaluates decoded NSKeyedArchiver client identity records so a future human-reviewed design can see which records might require more investigation.
+
+For every decoded Chrome client identity record the command reports:
+
+- identity type, signing identifier, executable path, and code-sign-clone usage
+- object graph location and parent dictionary
+- whether the record appears complete, duplicated, active, historical, or orphaned
+- whether it references an installed application, references only a code-sign-clone path, and whether the executable currently exists
+- whether the record could ever be safely removed; current implementation always reports `false`
+- whether additional runtime evidence is required before any future manual action
+- deterministic safety classification: `never_delete`, `not_actionable`, `manual_only`, `potential_future_repair_candidate`, or `requires_runtime_confirmation`
+- deterministic explanation for the classification
+
+Insufficient evidence is explicit. Incomplete records are `not_actionable`. Installed or active records require runtime confirmation. Code-sign-clone-only and orphaned-looking records remain manual-review evidence only; they are not deletion instructions. The command does not mutate, delete, reset, repair, rewrite plists, clear caches, restart services, change diagnosis, change solver ranking, change planner behavior, or change confidence.
+
+Support bundles include `networkextension-repair-candidates.json` and `networkextension-repair-candidates.txt`, and bundle diffs include `NetworkExtension Repair Candidate Diff` for candidate object references, safety classifications, duplicate counts, orphaned counts, and code-sign-clone-only counts.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.
