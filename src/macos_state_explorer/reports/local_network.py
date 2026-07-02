@@ -10,6 +10,7 @@ from macos_state_explorer.core.model import Snapshot
 from macos_state_explorer.diagnostics.framework import build_support_bundle
 from macos_state_explorer.diagnostics.local_network.verification import LocalNetworkVerification, verify_local_network
 from macos_state_explorer.launchservices.analysis import LaunchServicesAnalysis, analysis_from_snapshot_payload
+from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 
 
@@ -25,7 +26,7 @@ class LocalNetworkReport:
         solution_json = self.solution.to_json_dict()
         verification_json = self.verification.to_json_dict()
         verification_json.pop("command", None)
-        return {
+        payload = {
             "command": "report local-network",
             "system_context": _system_context_to_json(self.snapshot),
             "trace": _trace_to_json(self.trace_analysis),
@@ -35,10 +36,15 @@ class LocalNetworkReport:
             "repair_candidates": solution_json["repair_candidates"],
             "verification": verification_json,
             "next_actions": _next_actions_to_json(self.solution, self.verification, self.trace_analysis),
-            "launchservices_analysis": self.launchservices_analysis.to_json_dict()
-            if self.launchservices_analysis
-            else None,
         }
+        if self.solution.remediation_plan_summary is not None:
+            payload["remediation_plan_summary"] = self.solution.remediation_plan_summary
+        payload["launchservices_analysis"] = (
+            self.launchservices_analysis.to_json_dict()
+            if self.launchservices_analysis
+            else None
+        )
+        return payload
 
     def render_text(self) -> str:
         payload = self.to_json_dict()
@@ -79,6 +85,9 @@ class LocalNetworkReport:
                 f"- {evidence['id']} [{state}, confidence {evidence['confidence']:.0%}{provenance}] "
                 f"{evidence['title']}: {evidence['detail']}"
             )
+
+        if payload.get("remediation_plan_summary"):
+            lines.extend(["", render_remediation_plan_summary(payload["remediation_plan_summary"])])
 
         lines.append("")
         lines.append("Matched rules")

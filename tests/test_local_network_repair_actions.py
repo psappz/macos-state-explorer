@@ -406,7 +406,8 @@ def test_solve_and_report_json_contracts_remain_unchanged_after_repair_audit(mon
     report = runner.invoke(app, ["report", "local-network", "--json"])
 
     assert solve.exit_code == 0
-    assert list(json.loads(solve.stdout)) == ["command", "diagnosis", "evidence", "matched_rules", "repair_candidates", "next_action"]
+    solve_payload = json.loads(solve.stdout)
+    assert list(solve_payload)[:6] == ["command", "diagnosis", "evidence", "matched_rules", "repair_candidates", "next_action"]
     assert report.exit_code == 0
     report_payload = json.loads(report.stdout)
     assert list(report_payload)[:9] == [

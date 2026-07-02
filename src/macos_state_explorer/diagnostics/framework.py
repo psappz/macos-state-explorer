@@ -500,6 +500,7 @@ class DiagnosticSolution:
     repair_plan: list[RepairCandidate]
     rule_matches: list[RuleMatch] = field(default_factory=list)
     supporting_commands: tuple[str, ...] = ()
+    remediation_plan_summary: dict[str, Any] | None = None
 
     def render_text(self) -> str:
         primary = self.repair_plan[0]
@@ -516,6 +517,11 @@ class DiagnosticSolution:
                 f"- {evidence.id} [{state}, confidence {evidence.confidence:.0%}{provenance}] "
                 f"{evidence.title}: {evidence.detail}"
             )
+
+        if self.remediation_plan_summary:
+            from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
+
+            lines.extend(["", render_remediation_plan_summary(self.remediation_plan_summary)])
 
         if self.rule_matches:
             lines.extend(["", "Rule explanation"])
@@ -562,7 +568,7 @@ class DiagnosticSolution:
         return "\n".join(lines)
 
     def to_json_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "command": f"solve {self.command_name}",
             "diagnosis": self.diagnosis,
             "evidence": [evidence_to_json(item) for item in sorted(self.evidence, key=lambda item: item.id)],
@@ -570,6 +576,9 @@ class DiagnosticSolution:
             "repair_candidates": [repair_candidate_to_json(candidate) for candidate in self.repair_plan],
             "next_action": repair_candidate_to_json(self.repair_plan[0]),
         }
+        if self.remediation_plan_summary is not None:
+            payload["remediation_plan_summary"] = self.remediation_plan_summary
+        return payload
 
 
 EvidenceProvider = Callable[[Snapshot, dict[str, Any] | None], Sequence[DiagnosticEvidence]]

@@ -20,6 +20,7 @@ from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
 from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, analysis_records_from_snapshot_payload, render_launchservices_analysis
 from macos_state_explorer.launchservices.generations import analyze_generations, render_generation_summary
+from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation, render_remediation_plan
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
 from macos_state_explorer.reports.launchservices import build_launchservices_report, write_launchservices_support_bundle
@@ -59,12 +60,19 @@ def launchservices(
     ctx: typer.Context,
     out: Path = typer.Argument(..., help="Output directory, or 'analyze' for root-cause analysis."),
 ):
-    if str(out) in {"analyze", "generations"}:
+    if str(out) in {"analyze", "generations", "plan"}:
         snap = create_snapshot(fast=True)
         payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
         payload = payload if isinstance(payload, dict) else {}
-        if str(out) == "generations":
+        if str(out) in {"generations", "plan"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
+            if str(out) == "plan":
+                plan = plan_launchservices_remediation(generations)
+                if "--json" in ctx.args:
+                    typer.echo(json_module.dumps(plan.to_json_dict(), sort_keys=False))
+                else:
+                    console.print(render_remediation_plan(plan), markup=False)
+                return
             if "--json" in ctx.args:
                 typer.echo(json_module.dumps(generations.to_json_dict(), sort_keys=False))
             else:

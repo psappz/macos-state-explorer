@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from dataclasses import replace
 from typing import Any
 
 from macos_state_explorer.core.model import Snapshot
@@ -14,6 +15,9 @@ from macos_state_explorer.diagnostics.framework import (
 )
 from macos_state_explorer.diagnostics.local_network.evidence import LocalNetworkEvidence, collect_local_network_evidence
 from macos_state_explorer.diagnostics.local_network.module import LOCAL_NETWORK_MODULE
+from macos_state_explorer.launchservices.analysis import analysis_records_from_snapshot_payload
+from macos_state_explorer.launchservices.generations import analyze_generations
+from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation, remediation_plan_summary
 
 SolverEvidence = LocalNetworkEvidence
 LocalNetworkSolution = DiagnosticSolution
@@ -31,7 +35,8 @@ def build_local_network_solution(snapshot: Snapshot, trace_analysis: dict[str, A
         fallback_repair_order=LOCAL_NETWORK_MODULE.fallback_repair_order,
         supporting_commands=LOCAL_NETWORK_MODULE.supporting_commands,
     )
-    return FrameworkDiagnosticEngine(module).solve(snapshot, context={"trace_analysis": trace_analysis})
+    solution = FrameworkDiagnosticEngine(module).solve(snapshot, context={"trace_analysis": trace_analysis})
+    return replace(solution, remediation_plan_summary=_launchservices_remediation_summary(snapshot))
 
 
 def _solver_evidence_provider(snapshot: Snapshot, context: dict[str, Any] | None = None) -> list[LocalNetworkEvidence]:
@@ -41,6 +46,14 @@ def _solver_evidence_provider(snapshot: Snapshot, context: dict[str, Any] | None
         snapshot,
         trace_analysis=trace_analysis if isinstance(trace_analysis, dict) else None,
     )
+
+
+def _launchservices_remediation_summary(snapshot: Snapshot) -> dict[str, Any]:
+    payload = next((observation.payload for observation in snapshot.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    records = analysis_records_from_snapshot_payload(payload)
+    plan = plan_launchservices_remediation(analyze_generations(records))
+    return remediation_plan_summary(plan)
 
 
 def load_trace_analysis(path: Path | None) -> dict[str, Any] | None:

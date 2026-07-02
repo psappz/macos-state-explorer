@@ -49,8 +49,14 @@ def test_local_network_registered_module_matches_public_solver_contract():
     framework_solution = FrameworkDiagnosticEngine(registry.get("local-network")).solve(_snapshot())
     public_solution = build_local_network_solution(_snapshot())
 
-    assert framework_solution.to_json_dict() == public_solution.to_json_dict()
-    assert framework_solution.render_text() == public_solution.render_text()
+    framework_payload = framework_solution.to_json_dict()
+    public_payload = public_solution.to_json_dict()
+    assert {key: public_payload[key] for key in framework_payload} == framework_payload
+    assert "remediation_plan_summary" in public_payload
+    public_text = public_solution.render_text()
+    assert "Selective LaunchServices remediation plan" in public_text
+    assert "Repair candidate" in public_text
+    assert "Supporting read-only commands" in public_text
     assert [candidate.id for candidate in framework_solution.repair_plan] == ["manual-reinstall-chrome", "trace-local-network"]
 
 
@@ -62,6 +68,8 @@ def test_solve_local_network_cli_uses_framework_backed_module_without_contract_d
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload == FrameworkDiagnosticEngine(LOCAL_NETWORK_MODULE).solve(_snapshot()).to_json_dict()
+    framework_payload = FrameworkDiagnosticEngine(LOCAL_NETWORK_MODULE).solve(_snapshot()).to_json_dict()
+    assert {key: payload[key] for key in framework_payload} == framework_payload
+    assert "remediation_plan_summary" in payload
     assert payload["command"] == "solve local-network"
     assert [candidate["id"] for candidate in payload["repair_candidates"]] == ["manual-reinstall-chrome", "trace-local-network"]
