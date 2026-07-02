@@ -20,7 +20,12 @@ from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
 from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, analysis_records_from_snapshot_payload, render_launchservices_analysis
 from macos_state_explorer.launchservices.generations import analyze_generations, render_generation_summary
-from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation, render_remediation_plan
+from macos_state_explorer.launchservices.remediation_plan import (
+    LaunchServicesRemediationPlan,
+    RemediationSafety,
+    plan_launchservices_remediation,
+    render_remediation_plan,
+)
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
 from macos_state_explorer.reports.launchservices import build_launchservices_report, write_launchservices_support_bundle
@@ -60,12 +65,26 @@ def launchservices(
     ctx: typer.Context,
     out: Path = typer.Argument(..., help="Output directory, or 'analyze' for root-cause analysis."),
 ):
-    if str(out) in {"analyze", "generations", "plan"}:
+    if str(out) in {"analyze", "generations", "plan", "execute-plan"}:
         snap = create_snapshot(fast=True)
         payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
         payload = payload if isinstance(payload, dict) else {}
-        if str(out) in {"generations", "plan"}:
+        if str(out) in {"generations", "plan", "execute-plan"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
+            if str(out) == "execute-plan":
+                if "--dry-run" not in ctx.args:
+                    typer.echo("LaunchServices execute-plan currently supports --dry-run only; no mutation is implemented.")
+                    raise typer.Exit(1)
+                plan = plan_launchservices_remediation(generations)
+                execution = _launchservices_execute_plan_dry_run(plan)
+                audit_log = _option_path(ctx.args, "--audit-log")
+                if audit_log is not None:
+                    _write_launchservices_execute_plan_audit(audit_log, execution)
+                if "--json" in ctx.args:
+                    typer.echo(json_module.dumps(execution, sort_keys=False))
+                else:
+                    console.print(_render_launchservices_execute_plan_dry_run(execution), markup=False)
+                return
             if str(out) == "plan":
                 plan = plan_launchservices_remediation(generations)
                 if "--json" in ctx.args:
@@ -93,6 +112,115 @@ def launchservices(
     write_json(out / "stale-launchservices.json", stale)
     console.print(f"[green]LaunchServices output:[/green] {out}")
     console.print(f"Stale entries: {len(stale)}")
+
+
+def _launchservices_execute_plan_dry_run(plan: LaunchServicesRemediationPlan) -> dict[str, object]:
+    return {
+        "command": "launchservices execute-plan",
+        "plan_id": plan.plan_id,
+        "dry_run": True,
+        "commands_executed": [],
+        "product_family": plan.product_family,
+        "active_generation": plan.active_generation,
+        "candidate_generations": list(plan.candidate_generations),
+        "skipped_generations": list(plan.skipped_generations),
+        "safety_summary": dict(plan.safety_summary),
+        "steps": [_execute_plan_step_json(step) for step in plan.steps],
+        "verification_commands": list(plan.verification_commands),
+        "warnings": list(plan.warnings),
+        "message": "No commands were executed. Dry-run only; LaunchServices mutation is not implemented.",
+    }
+
+
+def _execute_plan_step_json(step) -> dict[str, object]:
+    payload = step.to_json_dict()
+    payload["executable"] = False
+    payload["commands_executed"] = []
+    payload["execution_status"] = _execute_plan_step_status(step.safety)
+    return payload
+
+
+def _execute_plan_step_status(safety: RemediationSafety) -> str:
+    if safety == RemediationSafety.MANUAL_REVIEW_REQUIRED:
+        return "manual-review-only; not executable in dry run"
+    if safety == RemediationSafety.PLAN_ONLY_SAFE:
+        return "PLAN_ONLY_SAFE candidate; execution is not implemented yet"
+    return f"{safety.value}; not executable in dry run"
+
+
+def _render_launchservices_execute_plan_dry_run(execution: dict[str, object]) -> str:
+    lines = [
+        "LaunchServices execute-plan dry run",
+        "",
+        f"Plan ID: {execution['plan_id']}",
+        "dry_run: yes",
+        f"Product family: {execution['product_family']}",
+        "No commands were executed.",
+    ]
+    active = execution.get("active_generation")
+    lines.extend(["", "Active generation:"])
+    if isinstance(active, dict) and active.get("by_product"):
+        for product, info in sorted(active["by_product"].items()):
+            lines.append(f"- {product}: {info.get('version') or '<unknown>'} ({info.get('generation_id')})")
+    else:
+        lines.append("- none detected")
+    lines.extend(["", "Candidate generations"])
+    for candidate in execution.get("candidate_generations", []):
+        if isinstance(candidate, dict):
+            lines.append(f"- {candidate['product_family']} {candidate['generation_id']} — {candidate['safety']}: {candidate['reason']}")
+    if not execution.get("candidate_generations"):
+        lines.append("- none")
+    lines.extend(["", "Skipped generations"])
+    for skipped in execution.get("skipped_generations", []):
+        if isinstance(skipped, dict):
+            lines.append(f"- {skipped['product_family']} {skipped['generation_id']} — {skipped['safety']}: {skipped['reason']}")
+    if not execution.get("skipped_generations"):
+        lines.append("- none")
+    lines.extend(["", "Planned steps"])
+    for step in execution.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        lines.append(f"- {step['step_id']}: {step['product_family']} {step['generation_id']}")
+        lines.append(f"  Safety: {step['safety']}")
+        lines.append(f"  Executable in future: {'yes' if step.get('executable') else 'no'}")
+        lines.append(f"  Execution status: {step['execution_status']}")
+        lines.append(f"  Expected effect: {step['expected_effect']}")
+    if not execution.get("steps"):
+        lines.append("- none")
+    lines.extend(["", "Verification commands"])
+    for command in execution.get("verification_commands", []):
+        lines.append(f"- {command}")
+    lines.extend(["", "Warnings"])
+    for warning in execution.get("warnings", []):
+        lines.append(f"- {warning}")
+    lines.append("- No commands were executed. Dry-run only; LaunchServices mutation is not implemented.")
+    return "\n".join(lines)
+
+
+def _write_launchservices_execute_plan_audit(path: Path, execution: dict[str, object]) -> None:
+    event = {
+        "event": "launchservices_execute_plan_dry_run",
+        "command": "launchservices execute-plan",
+        "plan_id": execution["plan_id"],
+        "dry_run": True,
+        "commands_executed": [],
+        "step_count": len(execution.get("steps", [])),
+        "safety_summary": execution["safety_summary"],
+        "message": execution["message"],
+    }
+    expanded = path.expanduser()
+    expanded.parent.mkdir(parents=True, exist_ok=True)
+    with expanded.open("a") as handle:
+        handle.write(json_module.dumps(event, sort_keys=False) + "\n")
+
+
+def _option_path(args: list[str], name: str) -> Path | None:
+    if name not in args:
+        return None
+    index = args.index(name)
+    if index + 1 >= len(args):
+        return None
+    return Path(args[index + 1])
 
 
 @trace_app.command("local-network")
