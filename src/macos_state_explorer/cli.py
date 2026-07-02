@@ -84,7 +84,7 @@ def launchservices(
                         typer.echo(json_module.dumps(execution, sort_keys=False))
                     else:
                         console.print(_render_launchservices_execute_plan_execution(execution), markup=False)
-                    if execution["status"] != "SUCCESS":
+                    if execution["status"] != "MUTATED_AND_REMOVED":
                         raise typer.Exit(1)
                     return
                 if "--dry-run" not in ctx.args:
@@ -182,7 +182,7 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
     skipped_steps.extend(_skipped_generation_execution_step(generation) for generation in plan.skipped_generations)
     commands_executed: list[list[str]] = []
     errors: list[str] = []
-    status = "SUCCESS"
+    status = "UNKNOWN"
     after_analysis = before_analysis
 
     for step in plan.steps:
@@ -190,7 +190,7 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
             continue
         invariant_errors = _validate_step_invariants(step, current_analysis)
         if invariant_errors:
-            status = "FAILED"
+            status = "NO_MUTATION"
             verification = _verification_result(
                 before_analysis=current_analysis,
                 after_analysis=current_analysis,
@@ -222,16 +222,17 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
             command_results=command_results,
             errors=verification_errors,
         )
-        step_result = _executed_step_result(step, command_results, verification, verification_errors)
+        step_result = _executed_step_result(step, command_results, verification, list(verification["errors"]))
         executed_steps.append(step_result)
         _write_launchservices_generation_audit(audit_log, plan.plan_id, step_result)
-        if verification["result"] != "SUCCESS":
-            status = "FAILED"
+        if verification["result"] != "MUTATED_AND_REMOVED":
+            status = str(verification["result"])
             errors.extend(error for error in verification["errors"] if error not in errors)
             break
+        status = "MUTATED_AND_REMOVED"
         current_analysis = after_analysis
 
-    if status == "SUCCESS":
+    if status == "MUTATED_AND_REMOVED":
         after_analysis = current_analysis
     generation_diff = _generation_diff(before_analysis, after_analysis, [str(step.get("generation_id")) for step in executed_steps if isinstance(step, dict)])
     return {
@@ -240,6 +241,7 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
         "dry_run": False,
         "confirmed": True,
         "status": status,
+        "final_verdict": status,
         "product_family": plan.product_family,
         "before_generation_count": before_generation_count,
         "after_generation_count": len(after_analysis.generations),
@@ -252,7 +254,7 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
         "verification_commands": list(plan.verification_commands),
         "warnings": list(plan.warnings),
         "errors": errors,
-        "message": "Executed only PLAN_ONLY_SAFE LaunchServices generation steps." if status == "SUCCESS" else "Stopped immediately after an unexpected verification result.",
+        "message": "Executed only PLAN_ONLY_SAFE LaunchServices generation steps and verified persistent removal." if status == "MUTATED_AND_REMOVED" else "Stopped immediately after mutation did not produce persistent LaunchServices removal.",
     }
 
 
@@ -270,6 +272,8 @@ def _generation_diff(before_analysis, after_analysis, executed_generation_ids: l
     return {
         "removed": sorted(before_ids - after_ids),
         "added": sorted(after_ids - before_ids),
+        "persisted": sorted(before_ids & after_ids),
+        "regenerated": [generation_id for generation_id in executed if generation_id in after_ids],
         "unchanged": sorted(before_ids & after_ids),
         "still_present": [generation_id for generation_id in executed if generation_id in after_ids],
         "executed": executed,
@@ -301,7 +305,7 @@ def _commands_for_step(step) -> list[list[str]]:
 
 def _run_launchservices_command(command: list[str]) -> dict[str, object]:
     completed = subprocess.run(command, capture_output=True, text=True, check=False)
-    return {"command": command, "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
+    return {"command": command, "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr, "errno": completed.returncode if completed.returncode else None, "osstatus": None}
 
 
 def _verification_result(*, before_analysis, after_analysis, step, command_results: list[dict[str, object]], errors: list[str]) -> dict[str, object]:
@@ -313,35 +317,53 @@ def _verification_result(*, before_analysis, after_analysis, step, command_resul
     executed_generation_absent = step.generation_id not in after_ids
     generation_count_decreased = len(after_ids) < len(before_ids)
     active_generation_unchanged = active_before == active_after
-    local_network_status = "consistent"
+    command_failed = any(int(result.get("exit_code", 1)) != 0 for result in command_results)
+    commands_attempted = bool(command_results)
+    mutation_result = _mutation_result_state(
+        commands_attempted=commands_attempted,
+        command_failed=command_failed,
+        generation_removed=generation_removed,
+        executed_generation_absent=executed_generation_absent,
+    )
     before_solution = build_local_network_solution(_snapshot_from_analysis(before_analysis))
     after_solution = build_local_network_solution(_snapshot_from_analysis(after_analysis))
     before_steps = before_solution.to_json_dict().get("remediation_plan_summary", {}).get("step_count", 0)
     after_steps = after_solution.to_json_dict().get("remediation_plan_summary", {}).get("step_count", 0)
-    evidence_improves_or_consistent = int(after_steps) <= int(before_steps)
+    local_network_evidence_improves_or_consistent = mutation_result == "MUTATED_AND_REMOVED" and int(after_steps) <= int(before_steps)
     verification_errors = list(errors)
-    if not generation_count_decreased:
-        verification_errors.append("Generation count did not decrease after mutation.")
-    if not generation_removed:
-        verification_errors.append(f"Generation {step.generation_id} still exists after mutation.")
-    if not executed_generation_absent:
+    if mutation_result == "MUTATION_FAILED":
+        verification_errors.append("LaunchServices mutation primitive returned a non-zero result.")
+    elif mutation_result == "NO_MUTATION":
+        verification_errors.append("No LaunchServices mutation primitive was attempted or no persistent mutation was detected.")
+    elif mutation_result == "MUTATED_BUT_REGENERATED":
         verification_errors.append(f"Executed generation {step.generation_id} is still present in fresh LaunchServices analyzer output.")
     if not active_generation_unchanged:
         verification_errors.append("Active generation changed after mutation.")
-    if not evidence_improves_or_consistent:
-        verification_errors.append("Local Network evidence worsened after mutation.")
     return {
-        "result": "SUCCESS" if not verification_errors and all(int(result.get("exit_code", 1)) == 0 for result in command_results) else "FAILED",
+        "result": mutation_result,
         "before_generation_count": len(before_ids),
         "after_generation_count": len(after_ids),
         "generation_count_decreased": generation_count_decreased,
         "active_generation_unchanged": active_generation_unchanged,
         "generation_removed": generation_removed,
         "executed_generation_absent": executed_generation_absent,
-        "local_network_evidence": local_network_status,
-        "local_network_evidence_improves_or_consistent": evidence_improves_or_consistent,
+        "regeneration_source": "fresh LaunchServices analysis still reports the executed generation" if mutation_result == "MUTATED_BUT_REGENERATED" else None,
+        "local_network_evidence": "consistent" if local_network_evidence_improves_or_consistent else "unchanged-or-blocked",
+        "local_network_evidence_improves_or_consistent": local_network_evidence_improves_or_consistent,
         "errors": verification_errors,
     }
+
+
+def _mutation_result_state(*, commands_attempted: bool, command_failed: bool, generation_removed: bool, executed_generation_absent: bool) -> str:
+    if command_failed:
+        return "MUTATION_FAILED"
+    if not commands_attempted:
+        return "NO_MUTATION"
+    if generation_removed and executed_generation_absent:
+        return "MUTATED_AND_REMOVED"
+    if not executed_generation_absent:
+        return "MUTATED_BUT_REGENERATED"
+    return "UNKNOWN"
 
 
 def _snapshot_from_analysis(analysis):
@@ -364,6 +386,7 @@ def _snapshot_from_analysis(analysis):
 def _executed_step_result(step, command_results: list[dict[str, object]], verification: dict[str, object], errors: list[str]) -> dict[str, object]:
     registration_ids = [registration["path"] for registration in step.target_registrations]
     commands = [result["command"] for result in command_results]
+    mutation_primitives = [_mutation_primitive_from_result(result, registration_ids) for result in command_results]
     return {
         "step_id": step.step_id,
         "generation_id": step.generation_id,
@@ -371,11 +394,29 @@ def _executed_step_result(step, command_results: list[dict[str, object]], verifi
         "registration_count": len(registration_ids),
         "safety": step.safety.value,
         "mutation_performed": bool(commands),
+        "mutation_result": verification["result"],
+        "mutation_primitives": mutation_primitives,
         "commands": commands,
         "verification": verification,
         "result": verification["result"],
         "errors": errors,
         "rollback_metadata": "Re-register affected application bundle manually or restore LaunchServices database from system backup if needed.",
+    }
+
+
+def _mutation_primitive_from_result(result: dict[str, object], registration_ids: list[str]) -> dict[str, object]:
+    command = result.get("command") if isinstance(result.get("command"), list) else []
+    return {
+        "api": "lsregister",
+        "command": command,
+        "file": command[-1] if command else None,
+        "launchservices_call": "unregister",
+        "return_value": result.get("exit_code"),
+        "errno": result.get("errno", result.get("exit_code") if result.get("exit_code") else None),
+        "stdout": result.get("stdout", ""),
+        "stderr": result.get("stderr", ""),
+        "osstatus": result.get("osstatus"),
+        "affected_registration_ids": registration_ids,
     }
 
 
@@ -412,6 +453,7 @@ def _write_launchservices_generation_audit(path: Path | None, plan_id: str, step
         "plan_id": plan_id,
         "generation_id": step_result["generation_id"],
         "registration_ids": step_result["registration_ids"],
+        "mutation_primitives": step_result["mutation_primitives"],
         "commands": step_result["commands"],
         "verification": step_result["verification"],
         "before_generation_count": step_result["verification"]["before_generation_count"],
@@ -431,14 +473,21 @@ def _render_launchservices_execute_plan_execution(execution: dict[str, object]) 
         "",
         f"Plan ID: {execution['plan_id']}",
         f"Result: {execution['status']}",
+        f"Final verdict: {execution['final_verdict']}",
         f"Before generation count: {execution['before_generation_count']}",
         f"After generation count: {execution['after_generation_count']}",
+        "",
+        "Mutation",
+        "↓",
+        "Fresh analysis",
+        "↓",
+        "Generation diff",
     ]
     diff = execution.get("generation_diff") if isinstance(execution.get("generation_diff"), dict) else {}
-    lines.extend(["", "Generation diff"])
-    for label, key in [("Removed", "removed"), ("Unchanged", "unchanged"), ("Still present", "still_present")]:
+    for label, key in [("Removed", "removed"), ("Added", "added"), ("Persisted", "persisted"), ("Regenerated", "regenerated"), ("Still present", "still_present")]:
         values = diff.get(key, []) if isinstance(diff, dict) else []
         lines.append(f"- {label}: {', '.join(values) if values else 'none'}")
+    lines.extend(["↓", "Evidence diff", "- Local Network evidence: gated by persistent generation removal"])
     lines.extend(["", "Executed steps"])
     for step in execution.get("executed_steps", []):
         if not isinstance(step, dict):
@@ -754,7 +803,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -770,6 +819,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
             "unchanged": sorted(set(before_evidence) & set(after_evidence)),
             "changed_presence": sorted(evidence_id for evidence_id in set(before_evidence) & set(after_evidence) if before_evidence[evidence_id] != after_evidence[evidence_id]),
         },
+        "generation_diff": _bundle_generation_diff(before_report, after_report),
         "changed_fields": changed_fields,
     }
 
@@ -808,9 +858,26 @@ def _evidence_presence_by_id(report: dict[str, Any]) -> dict[str, bool]:
     return result
 
 
+def _bundle_generation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, list[str]]:
+    after = after_report.get("generation_diff") if isinstance(after_report.get("generation_diff"), dict) else {}
+    return {
+        "removed": _sorted_string_list(after.get("removed")),
+        "added": _sorted_string_list(after.get("added")),
+        "persisted": _sorted_string_list(after.get("persisted", after.get("unchanged"))),
+        "regenerated": _sorted_string_list(after.get("regenerated", after.get("still_present"))),
+    }
+
+
+def _sorted_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted(item for item in value if isinstance(item, str))
+
+
 def _render_bundle_diff(diff: dict[str, Any]) -> str:
     evidence = diff["evidence_diff"]
     files = diff["files"]
+    generation = diff.get("generation_diff", {})
     lines = [
         "Support bundle diff",
         f"Before: {diff['before']['path']}",
@@ -820,6 +887,12 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Added evidence: {', '.join(evidence['added']) if evidence['added'] else 'none'}",
         f"- Removed evidence: {', '.join(evidence['removed']) if evidence['removed'] else 'none'}",
         f"- Changed evidence presence: {', '.join(evidence['changed_presence']) if evidence['changed_presence'] else 'none'}",
+        "",
+        "Generation diff",
+        f"- Removed generations: {', '.join(generation.get('removed', [])) if generation.get('removed') else 'none'}",
+        f"- Added generations: {', '.join(generation.get('added', [])) if generation.get('added') else 'none'}",
+        f"- Persisted generations: {', '.join(generation.get('persisted', [])) if generation.get('persisted') else 'none'}",
+        f"- Regenerated generations: {', '.join(generation.get('regenerated', [])) if generation.get('regenerated') else 'none'}",
         "",
         "Changed fields",
         f"- {', '.join(diff['changed_fields']) if diff['changed_fields'] else 'none'}",
