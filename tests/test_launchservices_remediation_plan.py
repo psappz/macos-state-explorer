@@ -120,6 +120,14 @@ def planning_records() -> list[LaunchServicesRecord]:
     ]
 
 
+def skipped_only_records() -> list[LaunchServicesRecord]:
+    return [
+        item
+        for item in planning_records()
+        if "148.0.7778.216" not in (item.path_clean or item.path or "")
+    ]
+
+
 def snapshot(records: list[LaunchServicesRecord]) -> Snapshot:
     return Snapshot(
         host="plan-host",
@@ -424,10 +432,12 @@ def test_launchservices_execute_plan_confirm_executes_only_plan_only_safe_genera
     assert payload["command"] == "launchservices execute-plan"
     assert payload["dry_run"] is False
     assert payload["confirmed"] is True
-    assert payload["status"] == "SUCCESS"
+    assert payload["status"] == "MUTATED_AND_REMOVED"
+    assert payload["final_verdict"] == "MUTATED_AND_REMOVED"
     assert payload["before_generation_count"] > payload["after_generation_count"]
     assert payload["executed_steps"]
     assert all(step["safety"] == "PLAN_ONLY_SAFE" for step in payload["executed_steps"])
+    assert all(step["mutation_result"] == "MUTATED_AND_REMOVED" for step in payload["executed_steps"])
     assert all("148.0.7778.216" in " ".join(step["registration_ids"]) for step in payload["executed_steps"])
     assert calls
     called_text = "\n".join(" ".join(command) for command in calls)
@@ -453,8 +463,10 @@ def test_launchservices_execute_plan_confirm_aborts_on_verification_failure(monk
 
     assert result.exit_code == 1
     payload = json.loads(result.stdout)
-    assert payload["status"] == "FAILED"
-    assert payload["executed_steps"][0]["verification"]["result"] == "FAILED"
+    assert payload["status"] == "MUTATED_BUT_REGENERATED"
+    assert payload["final_verdict"] == "MUTATED_BUT_REGENERATED"
+    assert payload["executed_steps"][0]["verification"]["result"] == "MUTATED_BUT_REGENERATED"
+    assert payload["executed_steps"][0]["mutation_result"] == "MUTATED_BUT_REGENERATED"
     assert payload["executed_steps"][0]["verification"]["generation_count_decreased"] is False
     assert payload["executed_steps"][0]["verification"]["executed_generation_absent"] is False
     assert payload["generation_diff"]["still_present"]
@@ -477,13 +489,73 @@ def test_launchservices_execute_plan_confirm_fails_when_generation_count_drops_b
 
     assert result.exit_code == 1
     payload = json.loads(result.stdout)
-    assert payload["status"] == "FAILED"
+    assert payload["status"] == "MUTATED_BUT_REGENERATED"
+    assert payload["final_verdict"] == "MUTATED_BUT_REGENERATED"
     assert payload["before_generation_count"] > payload["after_generation_count"]
     step = payload["executed_steps"][0]
     assert step["verification"]["executed_generation_absent"] is False
     assert step["generation_id"] in payload["generation_diff"]["still_present"]
     assert step["generation_id"] in payload["generation_diff"]["unchanged"]
     assert step["generation_id"] not in payload["generation_diff"]["removed"]
+
+
+def test_launchservices_execute_plan_confirm_uses_fully_fresh_snapshot_after_mutation(monkeypatch):
+    calls: list[bool] = []
+    before_records = planning_records()
+    after_records = records_after_plan_only_execution(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    def fake_snapshot(fast=False):
+        calls.append(fast)
+        return snapshots.pop(0) if snapshots else snapshot(after_records)
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", fake_snapshot)
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 0
+    assert calls[:2] == [True, False]
+
+
+def test_launchservices_execute_plan_confirm_reports_mutation_failed(monkeypatch):
+    before_records = planning_records()
+    snapshots = [snapshot(before_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(before_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 13, "stdout": "", "stderr": "permission denied"})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "MUTATION_FAILED"
+    assert payload["final_verdict"] == "MUTATION_FAILED"
+    assert payload["executed_steps"][0]["mutation_result"] == "MUTATION_FAILED"
+    assert payload["executed_steps"][0]["mutation_primitives"][0]["return_value"] == 13
+    assert payload["executed_steps"][0]["mutation_primitives"][0]["errno"] == 13
+    assert "permission denied" in payload["errors"][0]
+
+
+def test_launchservices_execute_plan_confirm_detects_regeneration_and_blocks_local_network_improvement(monkeypatch):
+    calls: list[list[str]] = []
+    before_records = planning_records()
+    after_records = list(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: calls.append(command) or {"command": command, "exit_code": 0, "stdout": "removed transiently", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    step = payload["executed_steps"][0]
+    assert step["mutation_result"] == "MUTATED_BUT_REGENERATED"
+    assert step["verification"]["result"] == "MUTATED_BUT_REGENERATED"
+    assert step["verification"]["regeneration_source"] == "fresh LaunchServices analysis still reports the executed generation"
+    assert step["verification"]["local_network_evidence_improves_or_consistent"] is False
+    assert step["generation_id"] in payload["generation_diff"]["regenerated"]
 
 
 def test_launchservices_execute_plan_confirm_audit_is_deterministic(monkeypatch, tmp_path):
@@ -499,13 +571,62 @@ def test_launchservices_execute_plan_confirm_audit_is_deterministic(monkeypatch,
 
     assert result.exit_code == 0
     events = [json.loads(line) for line in audit_log.read_text().splitlines()]
-    assert len(events) == 1
-    assert list(events[0]) == ["event", "command", "plan_id", "generation_id", "registration_ids", "commands", "verification", "before_generation_count", "after_generation_count", "errors", "rollback_metadata"]
+    assert len(events) == 2
+    assert list(events[0]) == ["event", "command", "plan_id", "generation_id", "registration_ids", "mutation_primitives", "commands", "verification", "before_generation_count", "after_generation_count", "errors", "rollback_metadata"]
     assert events[0]["event"] == "launchservices_execute_plan_generation"
     assert events[0]["command"] == "launchservices execute-plan"
     assert events[0]["registration_ids"]
+    primitive = events[0]["mutation_primitives"][0]
+    assert list(primitive) == ["api", "command", "file", "launchservices_call", "return_value", "errno", "stdout", "stderr", "osstatus", "affected_registration_ids"]
+    assert primitive["api"] == "lsregister"
+    assert primitive["launchservices_call"] == "unregister"
+    assert primitive["affected_registration_ids"]
     assert events[0]["before_generation_count"] > events[0]["after_generation_count"]
-    assert events[0]["verification"]["result"] == "SUCCESS"
+    assert events[0]["verification"]["result"] == "MUTATED_AND_REMOVED"
+    run_event = events[1]
+    assert list(run_event) == ["event", "command", "plan_id", "confirmed", "status", "final_verdict", "before_generation_count", "after_generation_count", "generation_diff", "executed_step_count", "skipped_step_count", "commands_executed", "errors"]
+    assert run_event["event"] == "launchservices_execute_plan_run"
+    assert run_event["status"] == "MUTATED_AND_REMOVED"
+    assert run_event["executed_step_count"] == 1
+
+
+def test_launchservices_execute_plan_confirm_writes_audit_for_unknown_skipped_only_run(monkeypatch, tmp_path):
+    records = skipped_only_records()
+    audit_log = tmp_path / "audit" / "unknown.jsonl"
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(records))
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "UNKNOWN"
+    assert payload["executed_steps"] == []
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert len(events) == 1
+    assert events[0]["event"] == "launchservices_execute_plan_run"
+    assert events[0]["status"] == "UNKNOWN"
+    assert events[0]["executed_step_count"] == 0
+    assert events[0]["skipped_step_count"] == len(payload["skipped_steps"])
+    assert events[0]["errors"] == []
+
+
+def test_launchservices_execute_plan_confirm_writes_run_audit_for_failed_execution(monkeypatch, tmp_path):
+    before_records = planning_records()
+    audit_log = tmp_path / "audit" / "failed.jsonl"
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(before_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 13, "stdout": "", "stderr": "permission denied"})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert [event["event"] for event in events] == ["launchservices_execute_plan_generation", "launchservices_execute_plan_run"]
+    assert events[-1]["status"] == "MUTATION_FAILED"
+    assert events[-1]["final_verdict"] == payload["final_verdict"]
+    assert events[-1]["errors"]
 
 
 def test_launchservices_execute_plan_confirm_human_output_marks_manual_review_not_executed(monkeypatch):
@@ -520,7 +641,12 @@ def test_launchservices_execute_plan_confirm_human_output_marks_manual_review_no
 
     assert result.exit_code == 0
     assert "LaunchServices execute-plan execution" in result.stdout
-    assert "Result: SUCCESS" in result.stdout
+    assert "Result: MUTATED_AND_REMOVED" in result.stdout
+    assert "Mutation" in result.stdout
+    assert "Fresh analysis" in result.stdout
+    assert "Generation diff" in result.stdout
+    assert "Evidence diff" in result.stdout
+    assert "Final verdict: MUTATED_AND_REMOVED" in result.stdout
     assert "Mutation performed:" in result.stdout
     assert "Verification:" in result.stdout
     assert "NOT EXECUTED" in result.stdout
@@ -576,3 +702,13 @@ def test_phase1_execution_note_documents_chrome_only_safety_scope():
     assert "mounted or nonexistent installer volume" in note
     assert "Trash generations" in note
     assert "Future milestones" in note
+
+
+def test_persistent_mutation_validation_note_documents_false_success():
+    note = __import__("pathlib").Path("docs/LAUNCHSERVICES_PERSISTENT_MUTATION_VALIDATION.md").read_text()
+
+    assert "Observed real-world result" in note
+    assert "previous SUCCESS was incorrect" in note
+    assert "Mutation versus persistent state change" in note
+    assert "MUTATED_BUT_REGENERATED" in note
+    assert "Only `MUTATED_AND_REMOVED`" in note
