@@ -108,7 +108,8 @@ def test_launchservices_analyzer_groups_deterministically_with_json_contract():
     analysis = analyze_launchservices(analysis_records())
     payload = analysis.to_json_dict()
 
-    assert list(payload) == ["command", "entry_count", "groups", "entries"]
+    assert list(payload)[:4] == ["command", "entry_count", "groups", "entries"]
+    assert "generation_summary" in payload
     assert [group["root_cause"] for group in payload["groups"]][:4] == [
         "Old framework version",
         "Duplicate bundle registration",
@@ -180,7 +181,8 @@ def test_local_network_evidence_summarizes_launchservices_root_causes():
     stale = next(item for item in evidence if item.id == "LN-E002")
 
     assert stale.present is True
-    assert "stale LaunchServices registrations" in stale.detail
+    assert "Chromium-family LaunchServices generations" in stale.detail
+    assert "Google Chrome" in stale.detail
     assert "Root causes" in stale.detail
     assert "obsolete Chrome Framework" in stale.detail
 

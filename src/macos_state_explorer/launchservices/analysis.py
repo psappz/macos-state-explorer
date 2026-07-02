@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Iterable
 
+from macos_state_explorer.launchservices.generations import analyze_generations, generation_summary, render_generation_summary
 from macos_state_explorer.launchservices.models import LaunchServicesRecord, LaunchServicesStatus
 
 
@@ -85,14 +86,18 @@ class LaunchServicesAnalysisGroup:
 class LaunchServicesAnalysis:
     entries: list[LaunchServicesAnalysisEntry]
     groups: list[LaunchServicesAnalysisGroup]
+    generations: Any | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "command": "launchservices analyze",
             "entry_count": len(self.entries),
             "groups": [group.to_json_dict() for group in self.groups],
             "entries": [entry.to_json_dict() for entry in self.entries],
         }
+        if self.generations is not None:
+            payload["generation_summary"] = generation_summary(self.generations)
+        return payload
 
 
 def analyze_launchservices(records: Iterable[LaunchServicesRecord | dict[str, Any]]) -> LaunchServicesAnalysis:
@@ -101,7 +106,8 @@ def analyze_launchservices(records: Iterable[LaunchServicesRecord | dict[str, An
     entries = [_analyze_record(record, latest_versions) for record in normalized]
     entries.sort(key=lambda entry: (entry.root_cause.value, entry.path or "", entry.bundle_id or ""))
     groups = _build_groups(entries)
-    return LaunchServicesAnalysis(entries=entries, groups=groups)
+    generations = analyze_generations(normalized)
+    return LaunchServicesAnalysis(entries=entries, groups=groups, generations=generations)
 
 
 def render_launchservices_analysis(analysis: LaunchServicesAnalysis, *, verbose: bool = False) -> str:
@@ -123,6 +129,8 @@ def render_launchservices_analysis(analysis: LaunchServicesAnalysis, *, verbose:
             ]
         )
     entries = analysis.entries if verbose else [entry for entry in analysis.entries if entry.root_cause != LaunchServicesRootCause.HEALTHY]
+    if analysis.generations is not None:
+        lines.extend(["", "Generation summary", "==================", "", render_generation_summary(analysis.generations)])
     lines.extend(["", "Per-entry analysis"])
     if not entries:
         lines.append("- No suspicious LaunchServices registrations detected. Use --verbose to show healthy entries.")
