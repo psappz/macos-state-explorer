@@ -404,6 +404,104 @@ def test_launchservices_execute_plan_dry_run_writes_jsonl_audit(monkeypatch, tmp
     assert events[0]["commands_executed"] == []
 
 
+def records_after_plan_only_execution(records: list[LaunchServicesRecord]) -> list[LaunchServicesRecord]:
+    return [item for item in records if "Versions/148.0.7778.216" not in (item.path_clean or item.path or "")]
+
+
+def test_launchservices_execute_plan_confirm_executes_only_plan_only_safe_generations(monkeypatch):
+    calls: list[list[str]] = []
+    before_records = planning_records()
+    after_records = records_after_plan_only_execution(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: calls.append(command) or {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "launchservices execute-plan"
+    assert payload["dry_run"] is False
+    assert payload["confirmed"] is True
+    assert payload["status"] == "SUCCESS"
+    assert payload["before_generation_count"] > payload["after_generation_count"]
+    assert payload["executed_steps"]
+    assert all(step["safety"] == "PLAN_ONLY_SAFE" for step in payload["executed_steps"])
+    assert all("148.0.7778.216" in " ".join(step["registration_ids"]) for step in payload["executed_steps"])
+    assert calls
+    called_text = "\n".join(" ".join(command) for command in calls)
+    assert "Versions/148.0.7778.216" in called_text
+    assert "/Volumes/Google Chrome" not in called_text
+    assert ".Trash/Google Chrome.app" not in called_text
+    assert "GoogleUpdater" not in called_text
+    skipped = {step["generation_id"]: step for step in payload["skipped_steps"]}
+    assert skipped["google-chrome:149.0.7827.201:volumes-google-chrome-google-chrome-app"]["result"] == "NOT_EXECUTED"
+    assert skipped["google-chrome:149.0.7827.201:users-patrick-trash-google-chrome-app"]["result"] == "NOT_EXECUTED"
+    assert skipped["google-chrome:149.0.7827.250:applications-google-chrome-app"]["result"] == "NOT_EXECUTED"
+
+
+def test_launchservices_execute_plan_confirm_aborts_on_verification_failure(monkeypatch):
+    calls: list[list[str]] = []
+    before_records = planning_records()
+    snapshots = [snapshot(before_records), snapshot(before_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(before_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: calls.append(command) or {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "FAILED"
+    assert payload["executed_steps"][0]["verification"]["result"] == "FAILED"
+    assert payload["executed_steps"][0]["verification"]["generation_count_decreased"] is False
+    assert payload["errors"]
+    assert len(payload["executed_steps"]) == 1
+
+
+def test_launchservices_execute_plan_confirm_audit_is_deterministic(monkeypatch, tmp_path):
+    before_records = planning_records()
+    after_records = records_after_plan_only_execution(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+    audit_log = tmp_path / "audit" / "launchservices-execute.jsonl"
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert len(events) == 1
+    assert list(events[0]) == ["event", "command", "plan_id", "generation_id", "registration_ids", "commands", "verification", "before_generation_count", "after_generation_count", "errors", "rollback_metadata"]
+    assert events[0]["event"] == "launchservices_execute_plan_generation"
+    assert events[0]["command"] == "launchservices execute-plan"
+    assert events[0]["registration_ids"]
+    assert events[0]["before_generation_count"] > events[0]["after_generation_count"]
+    assert events[0]["verification"]["result"] == "SUCCESS"
+
+
+def test_launchservices_execute_plan_confirm_human_output_marks_manual_review_not_executed(monkeypatch):
+    before_records = planning_records()
+    after_records = records_after_plan_only_execution(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm"])
+
+    assert result.exit_code == 0
+    assert "LaunchServices execute-plan execution" in result.stdout
+    assert "Result: SUCCESS" in result.stdout
+    assert "Mutation performed:" in result.stdout
+    assert "Verification:" in result.stdout
+    assert "NOT EXECUTED" in result.stdout
+    assert "Manual review required" in result.stdout
+    assert "/Volumes/Google Chrome" in result.stdout
+
+
 def test_local_network_solution_and_report_include_additive_plan_summary(monkeypatch):
     monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
     runner = CliRunner()
@@ -442,3 +540,13 @@ def test_internal_generation_planning_note_exists_and_explains_plan_only_scope()
     assert "generation-based" in note
     assert "plan-only" in note
     assert "real-world plan validation" in note
+
+
+def test_phase1_execution_note_documents_chrome_only_safety_scope():
+    note = __import__("pathlib").Path("docs/LAUNCHSERVICES_SELECTIVE_EXECUTION_PHASE1.md").read_text()
+
+    assert "PLAN_ONLY_SAFE" in note
+    assert "Google Chrome" in note
+    assert "mounted or nonexistent installer volume" in note
+    assert "Trash generations" in note
+    assert "Future milestones" in note
