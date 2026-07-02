@@ -77,7 +77,7 @@ def launchservices(
         if str(out) in {"generations", "plan", "execute-plan", "outcome"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
             if str(out) == "outcome":
-                outcome = build_launchservices_outcome(generations, audit_history=read_execute_plan_audit_history(_option_path(ctx.args, "--audit-log")))
+                outcome = build_launchservices_outcome(generations, audit_history=read_execute_plan_audit_history(_option_paths(ctx.args, "--audit-log")))
                 if "--json" in ctx.args:
                     typer.echo(json_module.dumps(outcome.to_json_dict(), sort_keys=False))
                 else:
@@ -618,12 +618,16 @@ def _write_launchservices_execute_plan_audit(path: Path, execution: dict[str, ob
 
 
 def _option_path(args: list[str], name: str) -> Path | None:
-    if name not in args:
-        return None
-    index = args.index(name)
-    if index + 1 >= len(args):
-        return None
-    return Path(args[index + 1])
+    paths = _option_paths(args, name)
+    return paths[0] if paths else None
+
+
+def _option_paths(args: list[str], name: str) -> list[Path] | None:
+    paths: list[Path] = []
+    for index, value in enumerate(args):
+        if value == name and index + 1 < len(args):
+            paths.append(Path(args[index + 1]))
+    return paths or None
 
 
 @trace_app.command("local-network")
@@ -655,7 +659,7 @@ def diagnose_local_network_cmd():
 @solve_app.command("local-network")
 def solve_local_network_cmd(
     trace: Path | None = None,
-    audit_log: Path | None = typer.Option(None, "--audit-log", help="Read LaunchServices execute-plan audit JSONL for outcome history."),
+    audit_log: list[Path] | None = typer.Option(None, "--audit-log", help="Read LaunchServices execute-plan audit JSONL for outcome history; may be repeated."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ):
     snap = create_snapshot(fast=True)
@@ -917,6 +921,8 @@ def _bundle_outcome_diff(before_report: dict[str, Any], after_report: dict[str, 
         "resolved": max(0, int(before.get("remaining", 0)) - int(after.get("remaining", 0))),
         "status_before": str(before.get("automatic_remediation_status", "UNKNOWN")),
         "status_after": str(after.get("automatic_remediation_status", "UNKNOWN")),
+        "audit_informed_before": bool(before.get("audit_informed", False)),
+        "audit_informed_after": bool(after.get("audit_informed", False)),
     }
 
 
@@ -985,7 +991,7 @@ def diff_bundles_cmd(
 def report_local_network_cmd(
     branch: str = "manual-empty-trash-reboot",
     trace: Path | None = None,
-    audit_log: Path | None = typer.Option(None, "--audit-log", help="Read LaunchServices execute-plan audit JSONL for outcome history."),
+    audit_log: list[Path] | None = typer.Option(None, "--audit-log", help="Read LaunchServices execute-plan audit JSONL for outcome history; may be repeated."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
     bundle: Path | None = typer.Option(None, "--bundle", help="Write a deterministic support bundle directory."),
 ):
