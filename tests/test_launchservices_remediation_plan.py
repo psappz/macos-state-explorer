@@ -312,6 +312,98 @@ def test_launchservices_plan_cli_json_and_human(monkeypatch):
     assert "LaunchServices remediation plan" in human_result.stdout
 
 
+def test_launchservices_execute_plan_dry_run_uses_generation_planner_human_output(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "LaunchServices output: execute-plan" not in result.stdout
+    assert "Stale entries:" not in result.stdout
+    assert "LaunchServices execute-plan dry run" in result.stdout
+    assert "Plan ID:" in result.stdout
+    assert "dry_run: yes" in result.stdout
+    assert "Product family: Chromium-family" in result.stdout
+    assert "Active generation:" in result.stdout
+    assert "Candidate generations" in result.stdout
+    assert "Skipped generations" in result.stdout
+    assert "Expected effect:" in result.stdout
+    assert "Safety:" in result.stdout
+    assert "Executable in future:" in result.stdout
+    assert "Verification commands" in result.stdout
+    assert "Warnings" in result.stdout
+    assert "No commands were executed." in result.stdout
+    assert "manual-review-only; not executable in dry run" in result.stdout
+    assert "execution is not implemented yet" in result.stdout
+
+
+def test_launchservices_execute_plan_dry_run_json_is_deterministic_and_non_mutating(monkeypatch, tmp_path):
+    calls: list[bool] = []
+
+    def fake_snapshot(fast: bool = False):
+        calls.append(fast)
+        return snapshot(planning_records())
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", fake_snapshot)
+    audit_log = tmp_path / "dry-run-audit.jsonl"
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--dry-run", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert list(payload) == [
+        "command",
+        "plan_id",
+        "dry_run",
+        "commands_executed",
+        "product_family",
+        "active_generation",
+        "candidate_generations",
+        "skipped_generations",
+        "safety_summary",
+        "steps",
+        "verification_commands",
+        "warnings",
+        "message",
+    ]
+    assert payload["command"] == "launchservices execute-plan"
+    assert payload["dry_run"] is True
+    assert payload["commands_executed"] == []
+    assert payload["message"] == "No commands were executed. Dry-run only; LaunchServices mutation is not implemented."
+    assert calls == [True]
+    assert not (tmp_path / "execute-plan").exists()
+
+
+def test_launchservices_execute_plan_dry_run_step_executability(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--dry-run", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    manual_steps = [step for step in payload["steps"] if step["safety"] == "MANUAL_REVIEW_REQUIRED"]
+    plan_only_steps = [step for step in payload["steps"] if step["safety"] == "PLAN_ONLY_SAFE"]
+    assert manual_steps
+    assert plan_only_steps
+    assert all(step["executable"] is False for step in manual_steps)
+    assert all("manual-review-only" in step["execution_status"] for step in manual_steps)
+    assert all(step["executable"] is False for step in plan_only_steps)
+    assert all("execution is not implemented yet" in step["execution_status"] for step in plan_only_steps)
+
+
+def test_launchservices_execute_plan_dry_run_writes_jsonl_audit(monkeypatch, tmp_path):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
+    audit_log = tmp_path / "audit" / "launchservices.jsonl"
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--dry-run", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert len(events) == 1
+    assert list(events[0]) == ["event", "command", "plan_id", "dry_run", "commands_executed", "step_count", "safety_summary", "message"]
+    assert events[0]["event"] == "launchservices_execute_plan_dry_run"
+    assert events[0]["command"] == "launchservices execute-plan"
+    assert events[0]["dry_run"] is True
+    assert events[0]["commands_executed"] == []
+
+
 def test_local_network_solution_and_report_include_additive_plan_summary(monkeypatch):
     monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
     runner = CliRunner()
