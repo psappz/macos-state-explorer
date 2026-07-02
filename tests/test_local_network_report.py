@@ -7,7 +7,10 @@ from typer.testing import CliRunner
 
 from macos_state_explorer.cli import app
 from macos_state_explorer.core.model import Observation, Snapshot
-from macos_state_explorer.reports.local_network import build_local_network_report
+from macos_state_explorer.launchservices.generations import analyze_generations
+from macos_state_explorer.launchservices.models import LaunchServicesRecord, LaunchServicesStatus
+from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation
+from macos_state_explorer.reports.local_network import build_local_network_report, write_local_network_support_bundle
 
 REPORT_REQUIRED_KEYS = [
     "command",
@@ -82,6 +85,78 @@ def _trace_analysis() -> dict[str, object]:
         ],
         "candidate_paths": [],
     }
+
+
+def _ls_record(
+    path: str,
+    *,
+    bundle_id: str,
+    name: str,
+    version: str | None,
+    path_exists: bool | None = False,
+    classification: LaunchServicesStatus = LaunchServicesStatus.STALE,
+) -> LaunchServicesRecord:
+    return LaunchServicesRecord(
+        raw_block=f"path: {path}",
+        bundle_id=bundle_id,
+        name=name,
+        display_name=name,
+        version=version,
+        display_version=version,
+        path=path,
+        path_clean=path,
+        path_exists=path_exists,
+        volume="/",
+        volume_exists=True,
+        classification=classification,
+    )
+
+
+def _audit_context_snapshot() -> Snapshot:
+    records = [
+        _ls_record(
+            "/Applications/Google Chrome.app",
+            bundle_id="com.google.Chrome",
+            name="Google Chrome",
+            version="149.0.7827.250",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+        _ls_record(
+            "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/148.0.7778.216/Helpers/Google Chrome Helper.app",
+            bundle_id="com.google.Chrome.helper",
+            name="Google Chrome Helper",
+            version="148.0.7778.216",
+        ),
+    ]
+    return Snapshot(
+        host="audit-context-host",
+        created_at=123.0,
+        observations=[Observation(collector="launchservices", started_at=1, ended_at=2, payload={"entries": [record.model_dump(mode="python") for record in records]})],
+    )
+
+
+def _write_audit(path: Path, *, status: str, generation_id: str, diff_key: str) -> Path:
+    event = {
+        "event": "launchservices_execute_plan_run",
+        "command": "launchservices execute-plan",
+        "confirmed": True,
+        "status": status,
+        "final_verdict": status,
+        "generation_diff": {"removed": [], "added": [], "persisted": [], "regenerated": [], "still_present": []},
+        "executed_step_count": 1,
+        "skipped_step_count": 0,
+        "errors": [],
+    }
+    event["generation_diff"][diff_key] = [generation_id]
+    path.write_text(json.dumps(event) + "\n")
+    return path
+
+
+def _safe_generation_id(snapshot: Snapshot) -> str:
+    payload = next(observation.payload for observation in snapshot.observations if observation.collector == "launchservices")
+    analysis = analyze_generations([LaunchServicesRecord.model_validate(item) for item in payload["entries"]])
+    return next(step.generation_id for step in plan_launchservices_remediation(analysis).steps if step.safety.value == "PLAN_ONLY_SAFE")
 
 
 def test_report_model_json_contract_and_deterministic_ordering():
@@ -166,6 +241,7 @@ def test_report_human_output_contains_support_ready_sections(monkeypatch):
     assert "ln-rule-chrome-identity-reinstall" in result.stdout
     assert "manual-reinstall-chrome" in result.stdout
     assert "Verification: FAILED" in result.stdout
+    assert "Audit context: unavailable" in result.stdout
 
 
 def test_report_cli_json_output_is_parseable_and_uses_contract(monkeypatch):
@@ -226,6 +302,105 @@ def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_p
     assert command_json["branch"] == "manual-empty-trash-reboot"
     environment_json = json.loads((bundle_dir / "environment.json").read_text())
     assert list(environment_json) == ["python_version", "platform", "system", "machine"]
+
+
+def test_report_local_network_accepts_multiple_audit_logs_and_marks_audit_context(monkeypatch, tmp_path):
+    snap = _audit_context_snapshot()
+    safe_id = _safe_generation_id(snap)
+    first = _write_audit(tmp_path / "ls-selective-exec.jsonl", status="MUTATED_AND_REMOVED", generation_id=safe_id, diff_key="removed")
+    second = _write_audit(tmp_path / "ls-persistent-validation.jsonl", status="UNKNOWN", generation_id=safe_id, diff_key="still_present")
+    bundle_dir = tmp_path / "audit-bundle"
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snap)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "report",
+            "local-network",
+            "--audit-log",
+            str(first),
+            "--audit-log",
+            str(second),
+            "--bundle",
+            str(bundle_dir),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    _assert_required_key_prefix(payload, REPORT_REQUIRED_KEYS)
+    assert payload["audit_context"] == {"available": True, "source_count": 2}
+    assert payload["launchservices_outcome_summary"]["automatic_remediation_status"] == "UNKNOWN"
+    assert payload["launchservices_outcome_summary"]["audit_informed"] is True
+    assert "Audit context: available" in (bundle_dir / "report.txt").read_text()
+    command_json = json.loads((bundle_dir / "command.json").read_text())
+    assert command_json["launchservices_audit_log"] == {"provided": True, "count": 2, "paths": [str(first), str(second)], "kinds": ["file", "file"]}
+
+
+def test_report_bundle_outcome_json_is_audit_informed_for_attempted_but_present_again(monkeypatch, tmp_path):
+    snap = _audit_context_snapshot()
+    safe_id = _safe_generation_id(snap)
+    audit = _write_audit(tmp_path / "removed-but-present-again.jsonl", status="MUTATED_AND_REMOVED", generation_id=safe_id, diff_key="removed")
+    bundle_dir = tmp_path / "audit-bundle"
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snap)
+
+    result = CliRunner().invoke(app, ["report", "local-network", "--audit-log", str(audit), "--bundle", str(bundle_dir), "--json"])
+
+    assert result.exit_code == 0
+    report_payload = json.loads((bundle_dir / "report.json").read_text())
+    outcome_payload = json.loads((bundle_dir / "outcome.json").read_text())
+    plan_safe = [item for item in outcome_payload["remaining_generations"] if item["generation_id"] == safe_id][0]
+    assert report_payload["audit_context"] == {"available": True, "source_count": 1}
+    assert report_payload["launchservices_outcome_summary"]["automatic_remediation_status"] == "UNKNOWN"
+    assert outcome_payload["automatic_remediation_status"] == "UNKNOWN"
+    assert outcome_payload["audit_history"]["source_count"] == 1
+    assert plan_safe["history_state"] == "attempted_but_present_again"
+    assert "UNKNOWN" in (bundle_dir / "outcome.txt").read_text()
+
+
+def test_bundle_diff_shows_stable_unknown_when_both_bundles_use_same_audit_context(monkeypatch, tmp_path):
+    snap = _audit_context_snapshot()
+    safe_id = _safe_generation_id(snap)
+    audit = _write_audit(tmp_path / "removed-but-present-again.jsonl", status="MUTATED_AND_REMOVED", generation_id=safe_id, diff_key="removed")
+    before = tmp_path / "before"
+    after = tmp_path / "after"
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snap)
+    runner = CliRunner()
+
+    before_result = runner.invoke(app, ["report", "local-network", "--audit-log", str(audit), "--bundle", str(before), "--json"])
+    after_result = runner.invoke(app, ["report", "local-network", "--audit-log", str(audit), "--bundle", str(after), "--json"])
+    diff_result = runner.invoke(app, ["diff", "bundles", str(before), str(after), "--json"])
+
+    assert before_result.exit_code == 0
+    assert after_result.exit_code == 0
+    assert diff_result.exit_code == 0
+    diff_payload = json.loads(diff_result.stdout)
+    assert diff_payload["outcome_diff"]["status_before"] == "UNKNOWN"
+    assert diff_payload["outcome_diff"]["status_after"] == "UNKNOWN"
+    assert diff_payload["outcome_diff"]["audit_informed_before"] is True
+    assert diff_payload["outcome_diff"]["audit_informed_after"] is True
+
+
+def test_support_bundle_uses_supplied_audit_log_even_when_report_was_built_without_it(tmp_path):
+    snap = _audit_context_snapshot()
+    safe_id = _safe_generation_id(snap)
+    audit = _write_audit(tmp_path / "removed-but-present-again.jsonl", status="MUTATED_AND_REMOVED", generation_id=safe_id, diff_key="removed")
+    report = build_local_network_report(snap)
+
+    bundle = write_local_network_support_bundle(
+        report,
+        tmp_path / "bundle",
+        branch_id="manual-empty-trash-reboot",
+        launchservices_audit_log=audit,
+    )
+
+    report_payload = json.loads((bundle / "report.json").read_text())
+    outcome_payload = json.loads((bundle / "outcome.json").read_text())
+    assert report_payload["audit_context"] == {"available": True, "source_count": 1}
+    assert report_payload["launchservices_outcome_summary"]["automatic_remediation_status"] == "UNKNOWN"
+    assert outcome_payload["automatic_remediation_status"] == "UNKNOWN"
 
 
 def test_report_bundle_without_trace_records_no_trace_artifacts(monkeypatch, tmp_path):
