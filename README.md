@@ -19,7 +19,9 @@ Priority 1 is the Chrome Local Network issue:
 
 The current macOS/LaunchServices implementation is the public reference engine and reference case for WASP Prism. No new Diagnostic Engines should be added until the Chrome Local Network reference case is fully solved.
 
-Phase 2 is investigation-driven: modeled provenance must be kept separate from observed producer evidence, observed consumer evidence, inferred persistence mechanism, trace correlation evidence, high-fidelity trace timeline evidence, and unknown signals. The Chrome Local Network reference case remains the highest priority.
+Phase 2 is investigation-driven: modeled provenance must be kept separate from observed producer evidence, observed consumer evidence, inferred persistence mechanism, trace correlation evidence, high-fidelity trace timeline evidence, regeneration evidence, and unknown signals. The Chrome Local Network reference case remains the highest priority.
+
+The Regeneration Analysis Engine answers which observed or correlated source appears to recreate LaunchServices registrations after removal. It is evidence-only: every claim is categorized as Observed, Correlated, Inferred, or Unknown, and it performs no mutation, repair, planner, solver, or diagnosis changes.
 
 ## Install
 
@@ -39,6 +41,7 @@ mse collect ~/Desktop/mse-fast --fast-report
 mse launchservices ~/Desktop/mse-ls
 mse launchservices outcome
 mse launchservices provenance
+mse launchservices regeneration
 mse trace local-network ~/Desktop/mse-local-network-trace
 mse report local-network --bundle ~/Desktop/mse-support-bundle
 mse doctor
@@ -46,4 +49,4 @@ mse doctor
 
 ## Safety
 
-The platform defaults to read-only diagnosis and reporting. Any mutation-capable workflow must be explicitly scoped, confirmed, audited, regression-tested, and documented. LaunchServices Phase 1 mutation remains limited to confirmed PLAN_ONLY_SAFE obsolete Chrome generations only.
+The project defaults to read-only diagnosis and reporting. Any mutation-capable workflow must be explicitly scoped, confirmed, audited, regression-tested, and documented. LaunchServices Phase 1 mutation remains limited to confirmed PLAN_ONLY_SAFE obsolete Chrome generations only.

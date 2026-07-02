@@ -25,6 +25,7 @@ from macos_state_explorer.launchservices.generations import analyze_generations,
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, read_execute_plan_audit_history, render_launchservices_outcome
 from macos_state_explorer.launchservices.producer_evidence import build_launchservices_producer_evidence, render_launchservices_producer_evidence
 from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, render_launchservices_provenance
+from macos_state_explorer.launchservices.regeneration import build_launchservices_regeneration, render_launchservices_regeneration
 from macos_state_explorer.launchservices.remediation_plan import (
     LaunchServicesRemediationPlan,
     RemediationSafety,
@@ -73,11 +74,11 @@ def launchservices(
     ctx: typer.Context,
     out: Path = typer.Argument(..., help="Output directory, or 'analyze' for root-cause analysis."),
 ):
-    if str(out) in {"analyze", "generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence"}:
+    if str(out) in {"analyze", "generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence", "regeneration"}:
         snap = create_snapshot(fast=True)
         payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
         payload = payload if isinstance(payload, dict) else {}
-        if str(out) in {"generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence"}:
+        if str(out) in {"generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence", "regeneration"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
             if str(out) == "producer-evidence":
                 trace_path = _option_path(ctx.args, "--trace")
@@ -86,6 +87,18 @@ def launchservices(
                     typer.echo(json_module.dumps(producer_evidence.to_json_dict(), sort_keys=False))
                 else:
                     console.print(render_launchservices_producer_evidence(producer_evidence), markup=False)
+                return
+            if str(out) == "regeneration":
+                trace_path = _option_path(ctx.args, "--trace")
+                regeneration = build_launchservices_regeneration(
+                    generations,
+                    trace_analysis=load_trace_analysis(trace_path),
+                    audit_history=read_execute_plan_audit_history(_option_paths(ctx.args, "--audit-log")),
+                )
+                if "--json" in ctx.args:
+                    typer.echo(json_module.dumps(regeneration.to_json_dict(), sort_keys=False))
+                else:
+                    console.print(render_launchservices_regeneration(regeneration), markup=False)
                 return
             if str(out) == "provenance":
                 provenance = build_launchservices_provenance(generations)
@@ -885,7 +898,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -905,6 +918,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "outcome_diff": _bundle_outcome_diff(before_report, after_report),
         "provenance_diff": _bundle_provenance_diff(before_report, after_report),
         "producer_evidence_diff": _bundle_producer_evidence_diff(before_report, after_report),
+        "regeneration_diff": _bundle_regeneration_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1010,6 +1024,19 @@ def _bundle_producer_evidence_diff(before_report: dict[str, Any], after_report: 
     }
 
 
+def _bundle_regeneration_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("launchservices_regeneration_summary")
+    after_value = after_report.get("launchservices_regeneration_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    return {
+        "regenerator_before": str(before.get("top_regenerator", "Unknown")),
+        "regenerator_after": str(after.get("top_regenerator", "Unknown")),
+        "high_confidence_delta": int(after.get("high_confidence_generation_count", 0)) - int(before.get("high_confidence_generation_count", 0)),
+        "unknown_delta": int(after.get("unknown_generation_count", 0)) - int(before.get("unknown_generation_count", 0)),
+    }
+
+
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("trace_correlation_summary")
     after_value = after_report.get("trace_correlation_summary")
@@ -1081,6 +1108,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     outcome = diff.get("outcome_diff", {})
     provenance = diff.get("provenance_diff", {})
     producer_evidence = diff.get("producer_evidence_diff", {})
+    regeneration = diff.get("regeneration_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1117,6 +1145,11 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Removed evidence: {', '.join(producer_evidence.get('removed_evidence', [])) if producer_evidence.get('removed_evidence') else 'none'}",
         f"- Changed confidence: {', '.join(producer_evidence.get('changed_confidence', [])) if producer_evidence.get('changed_confidence') else 'none'}",
         f"- Changed observed status: {', '.join(producer_evidence.get('changed_observed_status', [])) if producer_evidence.get('changed_observed_status') else 'none'}",
+        "",
+        "Regeneration Diff",
+        f"- Regenerator: {regeneration.get('regenerator_before', 'Unknown')} → {regeneration.get('regenerator_after', 'Unknown')}",
+        f"- High confidence delta: {regeneration.get('high_confidence_delta', 0)}",
+        f"- Unknown delta: {regeneration.get('unknown_delta', 0)}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",
