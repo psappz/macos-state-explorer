@@ -35,6 +35,7 @@ from macos_state_explorer.launchservices.remediation_plan import (
     render_remediation_plan,
 )
 from macos_state_explorer.networkextension_correlation import build_networkextension_correlation, render_networkextension_correlation
+from macos_state_explorer.networkextension_object_graph import build_networkextension_object_graph, render_networkextension_object_graph
 from macos_state_explorer.networkextension_raw_references import build_networkextension_raw_references, render_networkextension_raw_references
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, render_networkextension_state
 from macos_state_explorer.remediation.rules import build_remediation_plan
@@ -123,6 +124,19 @@ def networkextension_raw_references_command(
         typer.echo(json_module.dumps(raw_references.to_json_dict(), sort_keys=False))
     else:
         console.print(render_networkextension_raw_references(raw_references), markup=False)
+
+
+@networkextension_app.command("object-graph")
+def networkextension_object_graph_command(
+    root: list[Path] | None = typer.Option(None, "--root", help="Read-only NetworkExtension root or file to inspect; repeatable."),
+    json_output: bool = typer.Option(False, "--json", help="Emit deterministic JSON."),
+):
+    roots = root if root else default_networkextension_roots()
+    object_graph = build_networkextension_object_graph(roots)
+    if json_output:
+        typer.echo(json_module.dumps(object_graph.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_networkextension_object_graph(object_graph), markup=False)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -969,7 +983,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "networkextension_object_graph_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -995,6 +1009,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "networkextension_state_diff": _bundle_networkextension_state_diff(before_report, after_report),
         "networkextension_correlation_diff": _bundle_networkextension_correlation_diff(before_report, after_report),
         "networkextension_raw_references_diff": _bundle_networkextension_raw_references_diff(before_report, after_report),
+        "networkextension_object_graph_diff": _bundle_networkextension_object_graph_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1227,6 +1242,30 @@ def _bundle_networkextension_raw_references_diff(before_report: dict[str, Any], 
     return {f"{key}_delta": int(after.get(key, 0)) - int(before.get(key, 0)) for key in keys}
 
 
+def _bundle_networkextension_object_graph_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("networkextension_object_graph_summary")
+    after_value = after_report.get("networkextension_object_graph_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    before_indices = set(_sorted_string_list(before.get("referenced_object_indices")))
+    after_indices = set(_sorted_string_list(after.get("referenced_object_indices")))
+    before_bindings = before.get("binding_classifications") if isinstance(before.get("binding_classifications"), dict) else {}
+    after_bindings = after.get("binding_classifications") if isinstance(after.get("binding_classifications"), dict) else {}
+    before_safety = before.get("safety_classifications") if isinstance(before.get("safety_classifications"), dict) else {}
+    after_safety = after.get("safety_classifications") if isinstance(after.get("safety_classifications"), dict) else {}
+    before_chains = set(_sorted_string_list(before.get("parent_chain_summaries")))
+    after_chains = set(_sorted_string_list(after.get("parent_chain_summaries")))
+    return {
+        "added_decoded_artifacts": max(0, int(after.get("decoded_artifacts", 0)) - int(before.get("decoded_artifacts", 0))),
+        "removed_decoded_artifacts": max(0, int(before.get("decoded_artifacts", 0)) - int(after.get("decoded_artifacts", 0))),
+        "added_referenced_object_indices": sorted(after_indices - before_indices),
+        "removed_referenced_object_indices": sorted(before_indices - after_indices),
+        "changed_binding_classifications": sorted(set(before_bindings) ^ set(after_bindings) | {key for key in set(before_bindings) & set(after_bindings) if before_bindings.get(key) != after_bindings.get(key)}),
+        "changed_safety_classifications": sorted(set(before_safety) ^ set(after_safety) | {key for key in set(before_safety) & set(after_safety) if before_safety.get(key) != after_safety.get(key)}),
+        "changed_parent_chain_summaries": sorted(before_chains ^ after_chains),
+    }
+
+
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("trace_correlation_summary")
     after_value = after_report.get("trace_correlation_summary")
@@ -1304,6 +1343,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     networkextension_state = diff.get("networkextension_state_diff", {})
     networkextension_correlation = diff.get("networkextension_correlation_diff", {})
     networkextension_raw_references = diff.get("networkextension_raw_references_diff", {})
+    networkextension_object_graph = diff.get("networkextension_object_graph_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1384,6 +1424,15 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Broad cache/blob references: {networkextension_raw_references.get('broad_cache_or_blob_references_delta', 0):+d}",
         f"- Structurally bound references: {networkextension_raw_references.get('structurally_bound_references_delta', 0):+d}",
         f"- Non-actionable references: {networkextension_raw_references.get('non_actionable_references_delta', 0):+d}",
+        "",
+        "NetworkExtension Object Graph Diff",
+        f"- Added decoded artifacts: {networkextension_object_graph.get('added_decoded_artifacts', 0)}",
+        f"- Removed decoded artifacts: {networkextension_object_graph.get('removed_decoded_artifacts', 0)}",
+        f"- Added referenced object indices: {', '.join(networkextension_object_graph.get('added_referenced_object_indices', [])) if networkextension_object_graph.get('added_referenced_object_indices') else 'none'}",
+        f"- Removed referenced object indices: {', '.join(networkextension_object_graph.get('removed_referenced_object_indices', [])) if networkextension_object_graph.get('removed_referenced_object_indices') else 'none'}",
+        f"- Changed binding classifications: {', '.join(networkextension_object_graph.get('changed_binding_classifications', [])) if networkextension_object_graph.get('changed_binding_classifications') else 'none'}",
+        f"- Changed safety classifications: {', '.join(networkextension_object_graph.get('changed_safety_classifications', [])) if networkextension_object_graph.get('changed_safety_classifications') else 'none'}",
+        f"- Changed parent-chain summaries: {', '.join(networkextension_object_graph.get('changed_parent_chain_summaries', [])) if networkextension_object_graph.get('changed_parent_chain_summaries') else 'none'}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",

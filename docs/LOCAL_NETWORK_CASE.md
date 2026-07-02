@@ -123,4 +123,23 @@ Raw-reference attribution does not infer identity edges from text, does not chan
 
 Support bundles include `networkextension-raw-references.json` and `networkextension-raw-references.txt`, and bundle diffs include `NetworkExtension Raw References Diff`.
 
+## NetworkExtension object graph decoder
+
+`mse networkextension object-graph` is the next read-only investigation step for NetworkExtension preference artifacts that store Chrome references inside NSKeyedArchiver-style `$objects[...]` arrays. Raw references are observable, but they remain non-actionable unless object graph context proves they are part of an actionable policy or client record. This command adds that context without changing identity correlation or remediation behavior.
+
+For each Chrome/Chromium/code-sign-clone hit, the decoder reports:
+
+- artifact name and decoded object index such as `$objects[143]`
+- value type and matched token
+- recoverable object key path when present
+- parent chain and child/sibling object relationships from `plistlib.UID` references
+- nearest dictionary keys and neighboring object indices
+- binding classification: `policy_record_candidate`, `client_identity_candidate`, `cache_or_blob_reference`, `raw_archive_reference`, or `unknown_object_context`
+- safety classification: `read_only`, `not_actionable`, `inspect_only`, or `potential_future_repair_candidate`
+- explanation of why the evidence is only investigatory
+
+The decoder does not infer identity bindings unless the NSKeyedArchiver object graph structurally supports them. It does not classify anything as deletable. It does not mutate, delete, reset, repair, rewrite plists, clear caches, restart services, change diagnosis, change solver ranking, change planner behavior, or change confidence. This PR is read-only and does not solve or repair the Local Network issue.
+
+Support bundles include `networkextension-object-graph.json` and `networkextension-object-graph.txt`, and bundle diffs include `NetworkExtension Object Graph Diff` for decoded artifacts, referenced object indices, binding classifications, safety classifications, and parent-chain summaries.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.
