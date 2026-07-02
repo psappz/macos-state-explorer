@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from dataclasses import replace
 import io
 import json as json_module
+import subprocess
 import typer
 from rich.console import Console
 
@@ -72,12 +73,21 @@ def launchservices(
         if str(out) in {"generations", "plan", "execute-plan"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
             if str(out) == "execute-plan":
-                if "--dry-run" not in ctx.args:
-                    typer.echo("LaunchServices execute-plan currently supports --dry-run only; no mutation is implemented.")
-                    raise typer.Exit(1)
                 plan = plan_launchservices_remediation(generations)
-                execution = _launchservices_execute_plan_dry_run(plan)
                 audit_log = _option_path(ctx.args, "--audit-log")
+                if "--confirm" in ctx.args:
+                    execution = _launchservices_execute_plan_confirm(plan, generations, audit_log=audit_log)
+                    if "--json" in ctx.args:
+                        typer.echo(json_module.dumps(execution, sort_keys=False))
+                    else:
+                        console.print(_render_launchservices_execute_plan_execution(execution), markup=False)
+                    if execution["status"] != "SUCCESS":
+                        raise typer.Exit(1)
+                    return
+                if "--dry-run" not in ctx.args:
+                    typer.echo("LaunchServices execute-plan requires --dry-run or --confirm.")
+                    raise typer.Exit(1)
+                execution = _launchservices_execute_plan_dry_run(plan)
                 if audit_log is not None:
                     _write_launchservices_execute_plan_audit(audit_log, execution)
                 if "--json" in ctx.args:
@@ -146,6 +156,284 @@ def _execute_plan_step_status(safety: RemediationSafety) -> str:
     if safety == RemediationSafety.PLAN_ONLY_SAFE:
         return "PLAN_ONLY_SAFE candidate; execution is not implemented yet"
     return f"{safety.value}; not executable in dry run"
+
+
+def _is_phase1_executable_step(step) -> bool:
+    return step.safety == RemediationSafety.PLAN_ONLY_SAFE and step.product_family == "Google Chrome" and step.action == "plan_unregister_obsolete_generation"
+
+
+def _non_executable_step_reason(step) -> str:
+    if step.safety == RemediationSafety.MANUAL_REVIEW_REQUIRED:
+        return "Manual review required"
+    if step.safety == RemediationSafety.PLAN_ONLY_SAFE:
+        return "Phase 1 executes only PLAN_ONLY_SAFE Google Chrome obsolete helper/framework generations."
+    return "Blocked by LaunchServices execution safety policy"
+
+
+def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, before_analysis, audit_log: Path | None = None) -> dict[str, object]:
+    active_before = plan.active_generation
+    before_generation_count = len(before_analysis.generations)
+    current_analysis = before_analysis
+    executed_steps: list[dict[str, object]] = []
+    skipped_steps = [_skipped_execution_step(step, _non_executable_step_reason(step)) for step in plan.steps if not _is_phase1_executable_step(step)]
+    skipped_steps.extend(_skipped_generation_execution_step(generation) for generation in plan.skipped_generations)
+    commands_executed: list[list[str]] = []
+    errors: list[str] = []
+    status = "SUCCESS"
+    after_analysis = before_analysis
+
+    for step in plan.steps:
+        if not _is_phase1_executable_step(step):
+            continue
+        invariant_errors = _validate_step_invariants(step, current_analysis)
+        if invariant_errors:
+            status = "FAILED"
+            verification = _verification_result(
+                before_analysis=current_analysis,
+                after_analysis=current_analysis,
+                step=step,
+                command_results=[],
+                errors=invariant_errors,
+            )
+            executed_steps.append(_executed_step_result(step, [], verification, invariant_errors))
+            errors.extend(invariant_errors)
+            _write_launchservices_generation_audit(audit_log, plan.plan_id, executed_steps[-1])
+            break
+        command_results = []
+        for command in _commands_for_step(step):
+            result = _run_launchservices_command(command)
+            command_results.append(result)
+            commands_executed.append(command)
+            if int(result.get("exit_code", 1)) != 0:
+                errors.append(f"Command failed for {step.generation_id}: {result.get('stderr') or result.get('stdout') or result.get('exit_code')}")
+                break
+        if errors:
+            after_analysis = current_analysis
+        else:
+            after_snapshot = create_snapshot(fast=True)
+            after_payload = next((observation.payload for observation in after_snapshot.observations if observation.collector == "launchservices"), {})
+            after_payload = after_payload if isinstance(after_payload, dict) else {}
+            after_analysis = analyze_generations(analysis_records_from_snapshot_payload(after_payload))
+        verification_errors = list(errors)
+        verification = _verification_result(
+            before_analysis=current_analysis,
+            after_analysis=after_analysis,
+            step=step,
+            command_results=command_results,
+            errors=verification_errors,
+        )
+        step_result = _executed_step_result(step, command_results, verification, verification_errors)
+        executed_steps.append(step_result)
+        _write_launchservices_generation_audit(audit_log, plan.plan_id, step_result)
+        if verification["result"] != "SUCCESS":
+            status = "FAILED"
+            errors.extend(error for error in verification["errors"] if error not in errors)
+            break
+        current_analysis = after_analysis
+
+    if status == "SUCCESS":
+        after_analysis = current_analysis
+    return {
+        "command": "launchservices execute-plan",
+        "plan_id": plan.plan_id,
+        "dry_run": False,
+        "confirmed": True,
+        "status": status,
+        "product_family": plan.product_family,
+        "before_generation_count": before_generation_count,
+        "after_generation_count": len(after_analysis.generations),
+        "active_generation_before": active_before,
+        "active_generation_after": plan_launchservices_remediation(after_analysis).active_generation,
+        "executed_steps": executed_steps,
+        "skipped_steps": skipped_steps,
+        "commands_executed": commands_executed,
+        "verification_commands": list(plan.verification_commands),
+        "warnings": list(plan.warnings),
+        "errors": errors,
+        "message": "Executed only PLAN_ONLY_SAFE LaunchServices generation steps." if status == "SUCCESS" else "Stopped immediately after an unexpected verification result.",
+    }
+
+
+def _validate_step_invariants(step, analysis) -> list[str]:
+    generation = next((item for item in analysis.generations if item.generation_id == step.generation_id), None)
+    if generation is None:
+        return [f"Generation {step.generation_id} no longer exists before execution."]
+    errors: list[str] = []
+    if generation.classification.value != "STALE":
+        errors.append(f"Generation {step.generation_id} is no longer obsolete.")
+    if generation.active:
+        errors.append(f"Generation {step.generation_id} is active and cannot be executed.")
+    planned_paths = sorted(registration["path"] for registration in step.target_registrations)
+    current_paths = sorted(registration.path for registration in generation.registrations)
+    if len(current_paths) != len(planned_paths):
+        errors.append(f"Generation {step.generation_id} registration count changed before execution.")
+    if current_paths != planned_paths:
+        errors.append(f"Generation {step.generation_id} target registrations changed before execution.")
+    return errors
+
+
+def _commands_for_step(step) -> list[list[str]]:
+    lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+    return [[lsregister, "-u", registration["path"]] for registration in step.target_registrations if registration.get("path")]
+
+
+def _run_launchservices_command(command: list[str]) -> dict[str, object]:
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    return {"command": command, "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
+
+
+def _verification_result(*, before_analysis, after_analysis, step, command_results: list[dict[str, object]], errors: list[str]) -> dict[str, object]:
+    before_ids = {generation.generation_id for generation in before_analysis.generations}
+    after_ids = {generation.generation_id for generation in after_analysis.generations}
+    active_before = plan_launchservices_remediation(before_analysis).active_generation
+    active_after = plan_launchservices_remediation(after_analysis).active_generation
+    generation_removed = step.generation_id in before_ids and step.generation_id not in after_ids
+    generation_count_decreased = len(after_ids) < len(before_ids)
+    active_generation_unchanged = active_before == active_after
+    local_network_status = "consistent"
+    before_solution = build_local_network_solution(_snapshot_from_analysis(before_analysis))
+    after_solution = build_local_network_solution(_snapshot_from_analysis(after_analysis))
+    before_steps = before_solution.to_json_dict().get("remediation_plan_summary", {}).get("step_count", 0)
+    after_steps = after_solution.to_json_dict().get("remediation_plan_summary", {}).get("step_count", 0)
+    evidence_improves_or_consistent = int(after_steps) <= int(before_steps)
+    verification_errors = list(errors)
+    if not generation_count_decreased:
+        verification_errors.append("Generation count did not decrease after mutation.")
+    if not generation_removed:
+        verification_errors.append(f"Generation {step.generation_id} still exists after mutation.")
+    if not active_generation_unchanged:
+        verification_errors.append("Active generation changed after mutation.")
+    if not evidence_improves_or_consistent:
+        verification_errors.append("Local Network evidence worsened after mutation.")
+    return {
+        "result": "SUCCESS" if not verification_errors and all(int(result.get("exit_code", 1)) == 0 for result in command_results) else "FAILED",
+        "before_generation_count": len(before_ids),
+        "after_generation_count": len(after_ids),
+        "generation_count_decreased": generation_count_decreased,
+        "active_generation_unchanged": active_generation_unchanged,
+        "generation_removed": generation_removed,
+        "local_network_evidence": local_network_status,
+        "local_network_evidence_improves_or_consistent": evidence_improves_or_consistent,
+        "errors": verification_errors,
+    }
+
+
+def _snapshot_from_analysis(analysis):
+    from macos_state_explorer.core.model import Observation, Snapshot
+
+    return Snapshot(
+        host="launchservices-execute-plan-verification",
+        created_at=0,
+        observations=[
+            Observation(
+                collector="launchservices",
+                started_at=0,
+                ended_at=0,
+                payload={"entries": [registration.to_json_dict() for generation in analysis.generations for registration in generation.registrations]},
+            )
+        ],
+    )
+
+
+def _executed_step_result(step, command_results: list[dict[str, object]], verification: dict[str, object], errors: list[str]) -> dict[str, object]:
+    registration_ids = [registration["path"] for registration in step.target_registrations]
+    commands = [result["command"] for result in command_results]
+    return {
+        "step_id": step.step_id,
+        "generation_id": step.generation_id,
+        "registration_ids": registration_ids,
+        "registration_count": len(registration_ids),
+        "safety": step.safety.value,
+        "mutation_performed": bool(commands),
+        "commands": commands,
+        "verification": verification,
+        "result": verification["result"],
+        "errors": errors,
+        "rollback_metadata": "Re-register affected application bundle manually or restore LaunchServices database from system backup if needed.",
+    }
+
+
+def _skipped_execution_step(step, reason: str) -> dict[str, object]:
+    return {
+        "step_id": step.step_id,
+        "generation_id": step.generation_id,
+        "registration_ids": [registration["path"] for registration in step.target_registrations],
+        "registration_count": len(step.target_registrations),
+        "safety": step.safety.value,
+        "result": "NOT_EXECUTED",
+        "reason": reason,
+    }
+
+
+def _skipped_generation_execution_step(generation: dict[str, object]) -> dict[str, object]:
+    return {
+        "step_id": None,
+        "generation_id": generation["generation_id"],
+        "registration_ids": [],
+        "registration_count": generation.get("registration_count", 0),
+        "safety": generation["safety"],
+        "result": "NOT_EXECUTED",
+        "reason": generation["reason"],
+    }
+
+
+def _write_launchservices_generation_audit(path: Path | None, plan_id: str, step_result: dict[str, object]) -> None:
+    if path is None:
+        return
+    event = {
+        "event": "launchservices_execute_plan_generation",
+        "command": "launchservices execute-plan",
+        "plan_id": plan_id,
+        "generation_id": step_result["generation_id"],
+        "registration_ids": step_result["registration_ids"],
+        "commands": step_result["commands"],
+        "verification": step_result["verification"],
+        "before_generation_count": step_result["verification"]["before_generation_count"],
+        "after_generation_count": step_result["verification"]["after_generation_count"],
+        "errors": step_result["errors"],
+        "rollback_metadata": step_result["rollback_metadata"],
+    }
+    expanded = path.expanduser()
+    expanded.parent.mkdir(parents=True, exist_ok=True)
+    with expanded.open("a") as handle:
+        handle.write(json_module.dumps(event, sort_keys=False) + "\n")
+
+
+def _render_launchservices_execute_plan_execution(execution: dict[str, object]) -> str:
+    lines = [
+        "LaunchServices execute-plan execution",
+        "",
+        f"Plan ID: {execution['plan_id']}",
+        f"Result: {execution['status']}",
+        f"Before generation count: {execution['before_generation_count']}",
+        f"After generation count: {execution['after_generation_count']}",
+    ]
+    lines.extend(["", "Executed steps"])
+    for step in execution.get("executed_steps", []):
+        if not isinstance(step, dict):
+            continue
+        lines.append(f"- Generation: {step['generation_id']}")
+        lines.append(f"  Registration count: {step['registration_count']}")
+        lines.append(f"  Mutation performed: {step['mutation_performed']}")
+        lines.append(f"  Verification: {step['verification']['result']}")
+        lines.append(f"  Result: {step['result']}")
+    if not execution.get("executed_steps"):
+        lines.append("- none")
+    lines.extend(["", "Skipped"])
+    for step in execution.get("skipped_steps", []):
+        if not isinstance(step, dict):
+            continue
+        reason = "Manual review required" if step.get("safety") == RemediationSafety.MANUAL_REVIEW_REQUIRED.value else step.get("reason")
+        lines.append(f"- {step['generation_id']}: NOT EXECUTED — {reason}")
+        for registration_id in step.get("registration_ids", []):
+            lines.append(f"  - {registration_id}")
+    if not execution.get("skipped_steps"):
+        lines.append("- none")
+    if execution.get("errors"):
+        lines.extend(["", "Errors"])
+        for error in execution["errors"]:
+            lines.append(f"- {error}")
+    return "\n".join(lines)
 
 
 def _render_launchservices_execute_plan_dry_run(execution: dict[str, object]) -> str:
