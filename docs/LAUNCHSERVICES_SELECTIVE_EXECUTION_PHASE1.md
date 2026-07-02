@@ -36,7 +36,24 @@ Manual-review candidates must be reviewed and promoted by a later milestone befo
 
 Before every executable step, the CLI re-checks the planned generation invariants. After every mutation, it runs the LaunchServices generation analyzer and Local Network solver against the post-mutation snapshot.
 
+After every mutation, it reloads LaunchServices from a fresh post-execution snapshot and compares the executed generation id against the fresh analyzer output. A lower total generation count is not sufficient for success: if the executed generation remains present, the step and overall run are `FAILED`.
+
+The execution output includes an additive `generation_diff` block with removed, unchanged, and still-present executed generations so stale cached verification cannot masquerade as success.
+
 Execution stops immediately and returns `FAILED` if any expected invariant or verification result changes unexpectedly. Remaining plan steps are left untouched.
+
+## Bundle diffing
+
+For before/after support evidence, generate Local Network bundles and compare them with:
+
+```bash
+mse report local-network --bundle before-selective
+mse report local-network --bundle after-selective
+mse diff bundles before-selective after-selective
+mse diff bundles before-selective after-selective --json
+```
+
+The diff command is deterministic and reads the support bundle `report.json` files produced by `mse report local-network --bundle <path>`.
 
 ## Audit
 
