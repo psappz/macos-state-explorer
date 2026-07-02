@@ -22,7 +22,7 @@ from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
 from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, analysis_records_from_snapshot_payload, render_launchservices_analysis
 from macos_state_explorer.launchservices.generations import analyze_generations, render_generation_summary
-from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, render_launchservices_outcome
+from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, read_execute_plan_audit_history, render_launchservices_outcome
 from macos_state_explorer.launchservices.remediation_plan import (
     LaunchServicesRemediationPlan,
     RemediationSafety,
@@ -77,7 +77,7 @@ def launchservices(
         if str(out) in {"generations", "plan", "execute-plan", "outcome"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
             if str(out) == "outcome":
-                outcome = build_launchservices_outcome(generations)
+                outcome = build_launchservices_outcome(generations, audit_history=read_execute_plan_audit_history(_option_path(ctx.args, "--audit-log")))
                 if "--json" in ctx.args:
                     typer.echo(json_module.dumps(outcome.to_json_dict(), sort_keys=False))
                 else:
@@ -655,10 +655,11 @@ def diagnose_local_network_cmd():
 @solve_app.command("local-network")
 def solve_local_network_cmd(
     trace: Path | None = None,
+    audit_log: Path | None = typer.Option(None, "--audit-log", help="Read LaunchServices execute-plan audit JSONL for outcome history."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
 ):
     snap = create_snapshot(fast=True)
-    solution = build_local_network_solution(snap, trace_analysis=load_trace_analysis(trace))
+    solution = build_local_network_solution(snap, trace_analysis=load_trace_analysis(trace), launchservices_audit_log=audit_log)
     if json_output:
         typer.echo(json_module.dumps(solution.to_json_dict(), sort_keys=False))
     else:
@@ -904,7 +905,7 @@ def _bundle_generation_diff(before_report: dict[str, Any], after_report: dict[st
     }
 
 
-def _bundle_outcome_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, int]:
+def _bundle_outcome_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("launchservices_outcome_summary")
     after_value = after_report.get("launchservices_outcome_summary")
     before = before_value if isinstance(before_value, dict) else {}
@@ -914,6 +915,8 @@ def _bundle_outcome_diff(before_report: dict[str, Any], after_report: dict[str, 
         "remaining": int(after.get("remaining", 0)) - int(before.get("remaining", 0)),
         "newly_blocked": max(0, int(after.get("blocked", 0)) - int(before.get("blocked", 0))),
         "resolved": max(0, int(before.get("remaining", 0)) - int(after.get("remaining", 0))),
+        "status_before": str(before.get("automatic_remediation_status", "UNKNOWN")),
+        "status_after": str(after.get("automatic_remediation_status", "UNKNOWN")),
     }
 
 
@@ -949,6 +952,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Remaining: {outcome.get('remaining', 0)}",
         f"- Newly blocked: {outcome.get('newly_blocked', 0)}",
         f"- Resolved: {outcome.get('resolved', 0)}",
+        f"- Status: {outcome.get('status_before', 'UNKNOWN')} → {outcome.get('status_after', 'UNKNOWN')}",
         "",
         "Changed fields",
         f"- {', '.join(diff['changed_fields']) if diff['changed_fields'] else 'none'}",
@@ -981,14 +985,15 @@ def diff_bundles_cmd(
 def report_local_network_cmd(
     branch: str = "manual-empty-trash-reboot",
     trace: Path | None = None,
+    audit_log: Path | None = typer.Option(None, "--audit-log", help="Read LaunchServices execute-plan audit JSONL for outcome history."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
     bundle: Path | None = typer.Option(None, "--bundle", help="Write a deterministic support bundle directory."),
 ):
     snap = create_snapshot(fast=True)
-    report = build_local_network_report(snap, trace_analysis=load_trace_analysis(trace), branch_id=branch)
+    report = build_local_network_report(snap, trace_analysis=load_trace_analysis(trace), branch_id=branch, launchservices_audit_log=audit_log)
     if bundle is not None:
         try:
-            write_local_network_support_bundle(report, bundle, branch_id=branch, trace_path=trace)
+            write_local_network_support_bundle(report, bundle, branch_id=branch, trace_path=trace, launchservices_audit_log=audit_log)
         except ValueError as error:
             typer.echo(str(error))
             raise typer.Exit(1) from error
