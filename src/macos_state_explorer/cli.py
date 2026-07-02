@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from contextlib import redirect_stdout
 from dataclasses import replace
+from typing import Any
 import io
 import json as json_module
 import subprocess
@@ -44,6 +45,7 @@ solve_app = typer.Typer(no_args_is_help=True)
 verify_app = typer.Typer(no_args_is_help=True)
 report_app = typer.Typer(no_args_is_help=True)
 repair_app = typer.Typer(no_args_is_help=True)
+diff_app = typer.Typer(no_args_is_help=True)
 app.add_typer(trace_app, name="trace")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(diagnose_app, name="diagnose")
@@ -51,6 +53,7 @@ app.add_typer(solve_app, name="solve")
 app.add_typer(verify_app, name="verify")
 app.add_typer(report_app, name="report")
 app.add_typer(repair_app, name="repair")
+app.add_typer(diff_app, name="diff")
 console = Console()
 
 
@@ -210,10 +213,7 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
         if errors:
             after_analysis = current_analysis
         else:
-            after_snapshot = create_snapshot(fast=True)
-            after_payload = next((observation.payload for observation in after_snapshot.observations if observation.collector == "launchservices"), {})
-            after_payload = after_payload if isinstance(after_payload, dict) else {}
-            after_analysis = analyze_generations(analysis_records_from_snapshot_payload(after_payload))
+            after_analysis = _fresh_launchservices_generation_analysis()
         verification_errors = list(errors)
         verification = _verification_result(
             before_analysis=current_analysis,
@@ -233,6 +233,7 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
 
     if status == "SUCCESS":
         after_analysis = current_analysis
+    generation_diff = _generation_diff(before_analysis, after_analysis, [str(step.get("generation_id")) for step in executed_steps if isinstance(step, dict)])
     return {
         "command": "launchservices execute-plan",
         "plan_id": plan.plan_id,
@@ -244,6 +245,7 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
         "after_generation_count": len(after_analysis.generations),
         "active_generation_before": active_before,
         "active_generation_after": plan_launchservices_remediation(after_analysis).active_generation,
+        "generation_diff": generation_diff,
         "executed_steps": executed_steps,
         "skipped_steps": skipped_steps,
         "commands_executed": commands_executed,
@@ -251,6 +253,26 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
         "warnings": list(plan.warnings),
         "errors": errors,
         "message": "Executed only PLAN_ONLY_SAFE LaunchServices generation steps." if status == "SUCCESS" else "Stopped immediately after an unexpected verification result.",
+    }
+
+
+def _fresh_launchservices_generation_analysis():
+    snap = create_snapshot(fast=False)
+    payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    return analyze_generations(analysis_records_from_snapshot_payload(payload))
+
+
+def _generation_diff(before_analysis, after_analysis, executed_generation_ids: list[str]) -> dict[str, object]:
+    before_ids = {generation.generation_id for generation in before_analysis.generations}
+    after_ids = {generation.generation_id for generation in after_analysis.generations}
+    executed = sorted(set(executed_generation_ids))
+    return {
+        "removed": sorted(before_ids - after_ids),
+        "added": sorted(after_ids - before_ids),
+        "unchanged": sorted(before_ids & after_ids),
+        "still_present": [generation_id for generation_id in executed if generation_id in after_ids],
+        "executed": executed,
     }
 
 
@@ -288,6 +310,7 @@ def _verification_result(*, before_analysis, after_analysis, step, command_resul
     active_before = plan_launchservices_remediation(before_analysis).active_generation
     active_after = plan_launchservices_remediation(after_analysis).active_generation
     generation_removed = step.generation_id in before_ids and step.generation_id not in after_ids
+    executed_generation_absent = step.generation_id not in after_ids
     generation_count_decreased = len(after_ids) < len(before_ids)
     active_generation_unchanged = active_before == active_after
     local_network_status = "consistent"
@@ -301,6 +324,8 @@ def _verification_result(*, before_analysis, after_analysis, step, command_resul
         verification_errors.append("Generation count did not decrease after mutation.")
     if not generation_removed:
         verification_errors.append(f"Generation {step.generation_id} still exists after mutation.")
+    if not executed_generation_absent:
+        verification_errors.append(f"Executed generation {step.generation_id} is still present in fresh LaunchServices analyzer output.")
     if not active_generation_unchanged:
         verification_errors.append("Active generation changed after mutation.")
     if not evidence_improves_or_consistent:
@@ -312,6 +337,7 @@ def _verification_result(*, before_analysis, after_analysis, step, command_resul
         "generation_count_decreased": generation_count_decreased,
         "active_generation_unchanged": active_generation_unchanged,
         "generation_removed": generation_removed,
+        "executed_generation_absent": executed_generation_absent,
         "local_network_evidence": local_network_status,
         "local_network_evidence_improves_or_consistent": evidence_improves_or_consistent,
         "errors": verification_errors,
@@ -408,6 +434,11 @@ def _render_launchservices_execute_plan_execution(execution: dict[str, object]) 
         f"Before generation count: {execution['before_generation_count']}",
         f"After generation count: {execution['after_generation_count']}",
     ]
+    diff = execution.get("generation_diff") if isinstance(execution.get("generation_diff"), dict) else {}
+    lines.extend(["", "Generation diff"])
+    for label, key in [("Removed", "removed"), ("Unchanged", "unchanged"), ("Still present", "still_present")]:
+        values = diff.get(key, []) if isinstance(diff, dict) else []
+        lines.append(f"- {label}: {', '.join(values) if values else 'none'}")
     lines.extend(["", "Executed steps"])
     for step in execution.get("executed_steps", []):
         if not isinstance(step, dict):
@@ -712,6 +743,109 @@ def _verify_local_network_repair_step(snapshot, candidate, context=None) -> Repa
         transition=verification.transition,
         next_step=verification.next_step,
     )
+
+
+def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
+    before_path = before.expanduser()
+    after_path = after.expanduser()
+    before_report = _read_bundle_report(before_path)
+    after_report = _read_bundle_report(after_path)
+    before_files = _bundle_file_set(before_path)
+    after_files = _bundle_file_set(after_path)
+    before_evidence = _evidence_presence_by_id(before_report)
+    after_evidence = _evidence_presence_by_id(after_report)
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification"] if before_report.get(field) != after_report.get(field)]
+    return {
+        "command": "diff bundles",
+        "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
+        "after": {"path": str(after_path), "command": _read_json_if_exists(after_path / "command.json").get("command")},
+        "files": {
+            "added": sorted(after_files - before_files),
+            "removed": sorted(before_files - after_files),
+            "common": sorted(before_files & after_files),
+        },
+        "evidence_diff": {
+            "added": sorted(set(after_evidence) - set(before_evidence)),
+            "removed": sorted(set(before_evidence) - set(after_evidence)),
+            "unchanged": sorted(set(before_evidence) & set(after_evidence)),
+            "changed_presence": sorted(evidence_id for evidence_id in set(before_evidence) & set(after_evidence) if before_evidence[evidence_id] != after_evidence[evidence_id]),
+        },
+        "changed_fields": changed_fields,
+    }
+
+
+def _read_bundle_report(path: Path) -> dict[str, Any]:
+    report_path = path / "report.json"
+    if not path.exists() or not path.is_dir():
+        raise ValueError(f"Support bundle does not exist or is not a directory: {path}")
+    if not report_path.exists():
+        raise ValueError(f"Support bundle is missing report.json: {path}")
+    payload = json_module.loads(report_path.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError(f"Support bundle report.json is not an object: {path}")
+    return payload
+
+
+def _read_json_if_exists(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    payload = json_module.loads(path.read_text())
+    return payload if isinstance(payload, dict) else {}
+
+
+def _bundle_file_set(path: Path) -> set[str]:
+    return {str(item.relative_to(path)) for item in path.rglob("*") if item.is_file()}
+
+
+def _evidence_presence_by_id(report: dict[str, Any]) -> dict[str, bool]:
+    evidence = report.get("evidence")
+    result: dict[str, bool] = {}
+    if not isinstance(evidence, list):
+        return result
+    for item in evidence:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            result[item["id"]] = bool(item.get("present", True))
+    return result
+
+
+def _render_bundle_diff(diff: dict[str, Any]) -> str:
+    evidence = diff["evidence_diff"]
+    files = diff["files"]
+    lines = [
+        "Support bundle diff",
+        f"Before: {diff['before']['path']}",
+        f"After: {diff['after']['path']}",
+        "",
+        "Evidence",
+        f"- Added evidence: {', '.join(evidence['added']) if evidence['added'] else 'none'}",
+        f"- Removed evidence: {', '.join(evidence['removed']) if evidence['removed'] else 'none'}",
+        f"- Changed evidence presence: {', '.join(evidence['changed_presence']) if evidence['changed_presence'] else 'none'}",
+        "",
+        "Changed fields",
+        f"- {', '.join(diff['changed_fields']) if diff['changed_fields'] else 'none'}",
+        "",
+        "Files",
+        f"- Added files: {', '.join(files['added']) if files['added'] else 'none'}",
+        f"- Removed files: {', '.join(files['removed']) if files['removed'] else 'none'}",
+    ]
+    return "\n".join(lines)
+
+
+@diff_app.command("bundles")
+def diff_bundles_cmd(
+    before: Path,
+    after: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
+    try:
+        diff = _diff_support_bundles(before, after)
+    except ValueError as error:
+        typer.echo(str(error))
+        raise typer.Exit(1) from error
+    if json_output:
+        typer.echo(json_module.dumps(diff, sort_keys=False))
+    else:
+        console.print(_render_bundle_diff(diff), markup=False)
 
 
 @report_app.command("local-network")

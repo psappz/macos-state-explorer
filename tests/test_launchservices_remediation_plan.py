@@ -456,8 +456,34 @@ def test_launchservices_execute_plan_confirm_aborts_on_verification_failure(monk
     assert payload["status"] == "FAILED"
     assert payload["executed_steps"][0]["verification"]["result"] == "FAILED"
     assert payload["executed_steps"][0]["verification"]["generation_count_decreased"] is False
+    assert payload["executed_steps"][0]["verification"]["executed_generation_absent"] is False
+    assert payload["generation_diff"]["still_present"]
     assert payload["errors"]
     assert len(payload["executed_steps"]) == 1
+
+
+def test_launchservices_execute_plan_confirm_fails_when_generation_count_drops_but_executed_generation_remains(monkeypatch):
+    calls: list[list[str]] = []
+    before_records = planning_records()
+    # Simulate stale/cached post-mutation evidence: unrelated generations disappeared,
+    # but the executed PLAN_ONLY_SAFE Chrome generation is still present in the fresh analyzer output.
+    after_records = [item for item in before_records if "GoogleUpdater" not in (item.path_clean or item.path or "") and ".Trash" not in (item.path_clean or item.path or "")]
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: calls.append(command) or {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "FAILED"
+    assert payload["before_generation_count"] > payload["after_generation_count"]
+    step = payload["executed_steps"][0]
+    assert step["verification"]["executed_generation_absent"] is False
+    assert step["generation_id"] in payload["generation_diff"]["still_present"]
+    assert step["generation_id"] in payload["generation_diff"]["unchanged"]
+    assert step["generation_id"] not in payload["generation_diff"]["removed"]
 
 
 def test_launchservices_execute_plan_confirm_audit_is_deterministic(monkeypatch, tmp_path):

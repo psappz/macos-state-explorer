@@ -22,6 +22,9 @@ from macos_state_explorer.diagnostics.rules import RuleMatch
 
 LOCAL_NETWORK_SUPPORTING_COMMANDS = (
     "mse diagnose local-network",
+    "mse report local-network --bundle ~/Desktop/mse-local-network-before",
+    "mse report local-network --bundle ~/Desktop/mse-local-network-after",
+    "mse diff bundles ~/Desktop/mse-local-network-before ~/Desktop/mse-local-network-after",
     "mse launchservices ~/Desktop/mse-launchservices",
     "mse trace local-network ~/Desktop/mse-local-network-trace",
     "mse collect ~/Desktop/mse-local-network-collect --fast",
