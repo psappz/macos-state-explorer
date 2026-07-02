@@ -21,7 +21,7 @@ WASP stands for **Web Application Security & Performance**. The repository remai
 
 - Core must not contain domain-specific logic.
 - Every domain-specific implementation must be an Engine.
-- Shared platform code belongs in core only when it is domain-neutral.
+- Shared project code belongs in core only when it is domain-neutral.
 - LaunchServices and Chrome Local Network behavior are reference-engine logic, not core policy.
 - Public engines must use the same core-vs-engine boundary.
 
@@ -66,4 +66,4 @@ Every architecture-affecting PR must update docs. Documentation updates are part
 
 ## Evidence-driven diagnostic lifecycle
 
-The Chrome Local Network reference case advances through diagnosis, trace collection, planning, selective execution, persistent validation, outcome analysis, and registration provenance analysis. Provenance analysis is pure analysis: it identifies likely producers, persistence mechanisms, regeneration sources, consumers, confidence, and evidence without mutation, repair, or planner changes.
+The Chrome Local Network reference case advances through diagnosis, trace collection, planning, selective execution, persistent validation, outcome analysis, registration provenance analysis, producer evidence, trace correlation, high-fidelity timelines, and regeneration analysis. The Regeneration Analysis Engine is pure analysis: it categorizes each claim as Observed, Correlated, Inferred, or Unknown and identifies possible regeneration sources without mutation, repair, planner, solver, or diagnosis changes.

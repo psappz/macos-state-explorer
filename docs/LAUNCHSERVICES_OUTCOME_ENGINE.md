@@ -14,6 +14,7 @@ Phase 1 intentionally separates the LaunchServices workflow into deterministic r
 8. producer evidence: acquire observed producer/consumer signals separately from modeled provenance before any further repair milestone is considered.
 9. trace correlation: distinguish isolated observations from events that share a supported time-window/process context.
 10. high-fidelity trace acquisition: normalize timestamp, process, PID, thread, executable, subsystem, source, path, operation, confidence, and raw reference fields for descriptive timelines.
+11. regeneration analysis: classify evidence about which observed or correlated source recreates LaunchServices registrations after removal.
 
 ## Why outcome is pure analysis
 
@@ -65,6 +66,14 @@ Trace correlation is used by Local Network summaries and support bundles as `tra
 `mse trace timeline <trace-dir>` is descriptive evidence acquisition. It normalizes existing trace artifacts into a deterministic timeline schema with timestamp, process, PID, parent PID, thread ID, executable path, subsystem, source, file path, operation, signal, confidence, and raw reference fields where the source supports them.
 
 The timeline does not change diagnosis, repair ranking, planner behavior, or mutation scope. Its purpose is to provide higher-resolution evidence for later temporal/process correlation attempts. Local Network summaries include a compact timeline summary, support bundles include `trace-timeline.json` and `trace-timeline.txt`, and bundle diff reports Trace Timeline Diff.
+
+## Regeneration Analysis Engine
+
+`mse launchservices regeneration` is pure analysis that asks who or what appears to recreate LaunchServices registrations after removal. It consumes LaunchServices generations, audit history, producer/provenance context, high-fidelity trace timelines, and trace correlation evidence when available.
+
+Every claim is categorized as `Observed`, `Correlated`, `Inferred`, or `Unknown`. Only Observed and Correlated evidence may drive high confidence. Unknown evidence remains explicit and low-confidence; the engine must not invent a PID, process, regenerator, or repair action.
+
+The Regeneration Analysis Engine does not mutate LaunchServices, does not add repair functionality, does not change planner behavior, does not change solver behavior, and does not change diagnosis. Local Network reports include a compact regeneration summary, support bundles include `regeneration.json` and `regeneration.txt`, and bundle diff reports Regeneration Diff.
 
 ## Manual-review terminal state
 

@@ -14,6 +14,7 @@ from macos_state_explorer.launchservices.generations import analyze_generations
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, read_execute_plan_audit_history, render_launchservices_outcome, render_outcome_summary
 from macos_state_explorer.launchservices.producer_evidence import build_launchservices_producer_evidence, render_launchservices_producer_evidence, render_producer_evidence_summary
 from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, render_launchservices_provenance, render_provenance_summary
+from macos_state_explorer.launchservices.regeneration import build_launchservices_regeneration, local_network_regeneration_summary, render_launchservices_regeneration, render_regeneration_summary
 from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, render_trace_correlation_evidence, render_trace_correlation_summary
@@ -56,6 +57,7 @@ class LocalNetworkReport:
             payload["trace_correlation_summary"] = self.solution.trace_correlation_summary
         if self.solution.trace_timeline_summary is not None:
             payload["trace_timeline_summary"] = self.solution.trace_timeline_summary
+        payload["launchservices_regeneration_summary"] = local_network_regeneration_summary(_report_regeneration(self, self.launchservices_audit_log))
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -117,6 +119,8 @@ class LocalNetworkReport:
             lines.extend(["", render_trace_correlation_summary(payload["trace_correlation_summary"])])
         if payload.get("trace_timeline_summary"):
             lines.extend(["", _render_trace_timeline_summary(payload["trace_timeline_summary"])])
+        if payload.get("launchservices_regeneration_summary"):
+            lines.extend(["", render_regeneration_summary(payload["launchservices_regeneration_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -209,6 +213,9 @@ def write_local_network_support_bundle(
     trace_timeline = _report_trace_timeline(effective_report)
     (bundle / "trace-timeline.json").write_text(json.dumps(trace_timeline.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "trace-timeline.txt").write_text(render_trace_timeline(trace_timeline) + "\n")
+    regeneration = _report_regeneration(effective_report, effective_audit_log)
+    (bundle / "regeneration.json").write_text(json.dumps(regeneration.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "regeneration.txt").write_text(render_launchservices_regeneration(regeneration) + "\n")
     return bundle
 
 
@@ -234,6 +241,16 @@ def _report_trace_correlation(report: LocalNetworkReport):
 
 def _report_trace_timeline(report: LocalNetworkReport):
     return build_trace_timeline(report.trace_analysis)
+
+
+def _report_regeneration(report: LocalNetworkReport, audit_log: Path | Sequence[Path] | None = None):
+    payload = next((observation.payload for observation in report.snapshot.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    return build_launchservices_regeneration(
+        analyze_generations(analysis_records_from_snapshot_payload(payload)),
+        trace_analysis=report.trace_analysis,
+        audit_history=read_execute_plan_audit_history(audit_log),
+    )
 
 
 def _render_trace_timeline_summary(summary: dict[str, Any]) -> str:

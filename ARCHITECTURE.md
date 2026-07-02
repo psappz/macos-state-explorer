@@ -15,7 +15,7 @@ WASP Prism separates reusable diagnostic platform capability from domain-specifi
 - Core must not contain domain-specific logic.
 - Every domain-specific implementation must be an Engine.
 - Core owns domain-neutral snapshot, evidence, reporting, bundle, diff, audit-ingestion, CLI plumbing, and support-bundle primitives.
-- Engines own domain-specific collectors, parsers, classifiers, planners, outcome models, provenance models, producer-evidence acquisition, trace-correlation evidence, high-fidelity trace acquisition/timeline evidence, remediation constraints, and user-facing interpretation.
+- Engines own domain-specific collectors, parsers, classifiers, planners, outcome models, provenance models, producer-evidence acquisition, trace-correlation evidence, high-fidelity trace acquisition/timeline evidence, regeneration analysis evidence, remediation constraints, and user-facing interpretation.
 - Architecture-affecting PRs must update documentation.
 
 ## Layers
@@ -27,7 +27,7 @@ WASP Prism separates reusable diagnostic platform capability from domain-specifi
    Stores observations in a stable versioned format.
 
 3. Evidence and Inference
-   Produces hypotheses from evidence without embedding domain rules in core. Modeled provenance must remain separate from observed producer evidence, observed consumer evidence, inferred persistence mechanism, trace correlation evidence, high-fidelity timeline evidence, and unknown signals.
+   Produces hypotheses from evidence without embedding domain rules in core. Modeled provenance must remain separate from observed producer evidence, observed consumer evidence, inferred persistence mechanism, trace correlation evidence, high-fidelity timeline evidence, regeneration analysis evidence, and unknown signals. Regeneration Analysis Engine output categorizes each claim as Observed, Correlated, Inferred, or Unknown.
 
 4. Diagnostic Engines
    Encapsulate domain-specific analysis. The macOS/LaunchServices Chrome Local Network implementation is the public reference engine and reference case.
