@@ -18,6 +18,7 @@ from macos_state_explorer.launchservices.producer_evidence import build_launchse
 from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, render_launchservices_provenance, render_provenance_summary
 from macos_state_explorer.launchservices.regeneration import build_launchservices_regeneration, local_network_regeneration_summary, render_launchservices_regeneration, render_regeneration_summary
 from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
+from macos_state_explorer.networkextension_correlation import build_networkextension_correlation, networkextension_correlation_summary, render_networkextension_correlation, render_networkextension_correlation_summary
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, networkextension_state_summary, render_networkextension_state, render_networkextension_state_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, render_trace_correlation_evidence, render_trace_correlation_summary
@@ -64,6 +65,7 @@ class LocalNetworkReport:
         payload["launchservices_cleanup_checklist_summary"] = local_network_cleanup_checklist_summary(_report_cleanup_checklist(self))
         payload["launchservices_cleanup_verification_summary"] = local_network_cleanup_verification_summary(_report_cleanup_verification(self))
         payload["networkextension_state_summary"] = networkextension_state_summary(_report_networkextension_state())
+        payload["networkextension_correlation_summary"] = networkextension_correlation_summary(_report_networkextension_correlation(self))
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -133,6 +135,8 @@ class LocalNetworkReport:
             lines.extend(["", render_cleanup_verification_summary(payload["launchservices_cleanup_verification_summary"])])
         if payload.get("networkextension_state_summary"):
             lines.extend(["", render_networkextension_state_summary(payload["networkextension_state_summary"])])
+        if payload.get("networkextension_correlation_summary"):
+            lines.extend(["", render_networkextension_correlation_summary(payload["networkextension_correlation_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -237,6 +241,9 @@ def write_local_network_support_bundle(
     networkextension_state = _report_networkextension_state()
     (bundle / "networkextension-state.json").write_text(json.dumps(networkextension_state.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "networkextension-state.txt").write_text(render_networkextension_state(networkextension_state) + "\n")
+    networkextension_correlation = _report_networkextension_correlation(effective_report)
+    (bundle / "networkextension-correlation.json").write_text(json.dumps(networkextension_correlation.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "networkextension-correlation.txt").write_text(render_networkextension_correlation(networkextension_correlation) + "\n")
     return bundle
 
 
@@ -291,6 +298,18 @@ def _report_cleanup_verification(report: LocalNetworkReport):
 
 def _report_networkextension_state():
     return build_networkextension_state(default_networkextension_roots())
+
+
+def _report_networkextension_correlation(report: LocalNetworkReport):
+    payload = next((observation.payload for observation in report.snapshot.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    records = analysis_records_from_snapshot_payload(payload)
+    return build_networkextension_correlation(
+        analyze_generations(records),
+        records,
+        roots=default_networkextension_roots(),
+        trace_analysis=report.trace_analysis,
+    )
 
 
 def _render_trace_timeline_summary(summary: dict[str, Any]) -> str:
