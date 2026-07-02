@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import platform
 import json
-from dataclasses import dataclass
+import platform
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -52,6 +52,7 @@ class LocalNetworkReport:
             if self.launchservices_analysis
             else None
         )
+        payload["audit_context"] = _audit_context_to_json(self.launchservices_audit_log, self.solution.launchservices_outcome_summary)
         return payload
 
     def render_text(self) -> str:
@@ -65,6 +66,7 @@ class LocalNetworkReport:
             f"- Snapshot created at: {payload['system_context']['snapshot_created_at']}",
             f"- Observations: {payload['system_context']['observation_count']}",
             f"- Collectors: {', '.join(payload['system_context']['observation_collectors'])}",
+            f"- Audit context: {'available' if payload['audit_context']['available'] else 'unavailable'}",
             "",
             "Trace summary",
         ]
@@ -149,25 +151,35 @@ def write_local_network_support_bundle(
     trace_path: Path | None = None,
     launchservices_audit_log: Path | Sequence[Path] | None = None,
 ) -> Path:
+    effective_audit_log = launchservices_audit_log if launchservices_audit_log is not None else report.launchservices_audit_log
+    effective_report = replace(
+        report,
+        solution=build_local_network_solution(
+            report.snapshot,
+            trace_analysis=report.trace_analysis,
+            launchservices_audit_log=effective_audit_log,
+        ),
+        launchservices_audit_log=effective_audit_log,
+    )
     bundle = build_support_bundle(
         bundle_path,
-        report_json=report.to_json_dict(),
-        report_text=report.render_text(),
+        report_json=effective_report.to_json_dict(),
+        report_text=effective_report.render_text(),
         command_metadata={
             "command": "mse report local-network --bundle",
             "branch": branch_id,
             "trace": _trace_metadata(trace_path),
-            "launchservices_audit_log": _trace_metadata(launchservices_audit_log),
+            "launchservices_audit_log": _trace_metadata(effective_audit_log),
             "bundle_schema_version": 1,
         },
         environment=_environment_summary(),
         artifact_sources={"trace": trace_path} if trace_path is not None else None,
     )
-    if report.launchservices_analysis is not None:
+    if effective_report.launchservices_analysis is not None:
         (bundle / "launchservices-analysis.json").write_text(
-            json.dumps(report.launchservices_analysis.to_json_dict(), indent=2, ensure_ascii=False) + "\n"
+            json.dumps(effective_report.launchservices_analysis.to_json_dict(), indent=2, ensure_ascii=False) + "\n"
         )
-    outcome = _report_outcome(report, launchservices_audit_log or report.launchservices_audit_log)
+    outcome = _report_outcome(effective_report, effective_audit_log)
     (bundle / "outcome.json").write_text(json.dumps(outcome.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "outcome.txt").write_text(render_launchservices_outcome(outcome) + "\n")
     provenance = _report_provenance(report)
@@ -240,6 +252,15 @@ def _trace_to_json(trace_analysis: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _audit_context_to_json(audit_log: Path | Sequence[Path] | None, outcome_summary: dict[str, Any] | None) -> dict[str, Any]:
+    metadata = _trace_metadata(audit_log)
+    source_count = int(metadata.get("count", 1 if metadata.get("provided") else 0))
+    return {
+        "available": bool(metadata.get("provided") or (outcome_summary or {}).get("audit_informed")),
+        "source_count": source_count,
+    }
+
+
 
 def _environment_summary() -> dict[str, Any]:
     return {
@@ -258,11 +279,13 @@ def _trace_metadata(trace_path: Path | Sequence[Path] | None) -> dict[str, Any]:
         return {
             "provided": bool(paths),
             "count": len(paths),
+            "paths": [str(path) for path in paths],
             "kinds": ["directory" if path.is_dir() else "file" if path.is_file() else "missing" for path in paths],
         }
     expanded = Path(trace_path).expanduser()
     return {
         "provided": True,
+        "path": str(expanded),
         "kind": "directory" if expanded.is_dir() else "file" if expanded.is_file() else "missing",
     }
 
