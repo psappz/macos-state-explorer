@@ -9,7 +9,9 @@ from typing import Any
 from macos_state_explorer.core.model import Snapshot
 from macos_state_explorer.diagnostics.framework import build_support_bundle
 from macos_state_explorer.diagnostics.local_network.verification import LocalNetworkVerification, verify_local_network
-from macos_state_explorer.launchservices.analysis import LaunchServicesAnalysis, analysis_from_snapshot_payload
+from macos_state_explorer.launchservices.analysis import LaunchServicesAnalysis, analysis_from_snapshot_payload, analysis_records_from_snapshot_payload
+from macos_state_explorer.launchservices.generations import analyze_generations
+from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, render_launchservices_outcome, render_outcome_summary
 from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 
@@ -39,6 +41,8 @@ class LocalNetworkReport:
         }
         if self.solution.remediation_plan_summary is not None:
             payload["remediation_plan_summary"] = self.solution.remediation_plan_summary
+        if self.solution.launchservices_outcome_summary is not None:
+            payload["launchservices_outcome_summary"] = self.solution.launchservices_outcome_summary
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -88,6 +92,8 @@ class LocalNetworkReport:
 
         if payload.get("remediation_plan_summary"):
             lines.extend(["", render_remediation_plan_summary(payload["remediation_plan_summary"])])
+        if payload.get("launchservices_outcome_summary"):
+            lines.extend(["", render_outcome_summary(payload["launchservices_outcome_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -153,7 +159,16 @@ def write_local_network_support_bundle(
         (bundle / "launchservices-analysis.json").write_text(
             json.dumps(report.launchservices_analysis.to_json_dict(), indent=2, ensure_ascii=False) + "\n"
         )
+    outcome = _report_outcome(report)
+    (bundle / "outcome.json").write_text(json.dumps(outcome.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "outcome.txt").write_text(render_launchservices_outcome(outcome) + "\n")
     return bundle
+
+
+def _report_outcome(report: LocalNetworkReport):
+    payload = next((observation.payload for observation in report.snapshot.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    return build_launchservices_outcome(analyze_generations(analysis_records_from_snapshot_payload(payload)))
 
 
 def build_local_network_report(

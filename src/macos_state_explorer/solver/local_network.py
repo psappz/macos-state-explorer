@@ -17,6 +17,7 @@ from macos_state_explorer.diagnostics.local_network.evidence import LocalNetwork
 from macos_state_explorer.diagnostics.local_network.module import LOCAL_NETWORK_MODULE
 from macos_state_explorer.launchservices.analysis import analysis_records_from_snapshot_payload
 from macos_state_explorer.launchservices.generations import analyze_generations
+from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, outcome_summary
 from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation, remediation_plan_summary
 
 SolverEvidence = LocalNetworkEvidence
@@ -36,7 +37,11 @@ def build_local_network_solution(snapshot: Snapshot, trace_analysis: dict[str, A
         supporting_commands=LOCAL_NETWORK_MODULE.supporting_commands,
     )
     solution = FrameworkDiagnosticEngine(module).solve(snapshot, context={"trace_analysis": trace_analysis})
-    return replace(solution, remediation_plan_summary=_launchservices_remediation_summary(snapshot))
+    return replace(
+        solution,
+        remediation_plan_summary=_launchservices_remediation_summary(snapshot),
+        launchservices_outcome_summary=_launchservices_outcome_summary(snapshot),
+    )
 
 
 def _solver_evidence_provider(snapshot: Snapshot, context: dict[str, Any] | None = None) -> list[LocalNetworkEvidence]:
@@ -54,6 +59,14 @@ def _launchservices_remediation_summary(snapshot: Snapshot) -> dict[str, Any]:
     records = analysis_records_from_snapshot_payload(payload)
     plan = plan_launchservices_remediation(analyze_generations(records))
     return remediation_plan_summary(plan)
+
+
+def _launchservices_outcome_summary(snapshot: Snapshot) -> dict[str, Any]:
+    payload = next((observation.payload for observation in snapshot.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    records = analysis_records_from_snapshot_payload(payload)
+    outcome = build_launchservices_outcome(analyze_generations(records))
+    return outcome_summary(outcome)
 
 
 def load_trace_analysis(path: Path | None) -> dict[str, Any] | None:
