@@ -501,6 +501,7 @@ class DiagnosticSolution:
     rule_matches: list[RuleMatch] = field(default_factory=list)
     supporting_commands: tuple[str, ...] = ()
     remediation_plan_summary: dict[str, Any] | None = None
+    launchservices_outcome_summary: dict[str, Any] | None = None
 
     def render_text(self) -> str:
         primary = self.repair_plan[0]
@@ -522,6 +523,10 @@ class DiagnosticSolution:
             from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
 
             lines.extend(["", render_remediation_plan_summary(self.remediation_plan_summary)])
+        if self.launchservices_outcome_summary:
+            from macos_state_explorer.launchservices.outcome import render_outcome_summary
+
+            lines.extend(["", render_outcome_summary(self.launchservices_outcome_summary)])
 
         if self.rule_matches:
             lines.extend(["", "Rule explanation"])
@@ -578,6 +583,8 @@ class DiagnosticSolution:
         }
         if self.remediation_plan_summary is not None:
             payload["remediation_plan_summary"] = self.remediation_plan_summary
+        if self.launchservices_outcome_summary is not None:
+            payload["launchservices_outcome_summary"] = self.launchservices_outcome_summary
         return payload
 
 

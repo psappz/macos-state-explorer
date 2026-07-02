@@ -22,6 +22,7 @@ from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
 from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, analysis_records_from_snapshot_payload, render_launchservices_analysis
 from macos_state_explorer.launchservices.generations import analyze_generations, render_generation_summary
+from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, render_launchservices_outcome
 from macos_state_explorer.launchservices.remediation_plan import (
     LaunchServicesRemediationPlan,
     RemediationSafety,
@@ -69,12 +70,19 @@ def launchservices(
     ctx: typer.Context,
     out: Path = typer.Argument(..., help="Output directory, or 'analyze' for root-cause analysis."),
 ):
-    if str(out) in {"analyze", "generations", "plan", "execute-plan"}:
+    if str(out) in {"analyze", "generations", "plan", "execute-plan", "outcome"}:
         snap = create_snapshot(fast=True)
         payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
         payload = payload if isinstance(payload, dict) else {}
-        if str(out) in {"generations", "plan", "execute-plan"}:
+        if str(out) in {"generations", "plan", "execute-plan", "outcome"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
+            if str(out) == "outcome":
+                outcome = build_launchservices_outcome(generations)
+                if "--json" in ctx.args:
+                    typer.echo(json_module.dumps(outcome.to_json_dict(), sort_keys=False))
+                else:
+                    console.print(render_launchservices_outcome(outcome), markup=False)
+                return
             if str(out) == "execute-plan":
                 plan = plan_launchservices_remediation(generations)
                 audit_log = _option_path(ctx.args, "--audit-log")
@@ -830,7 +838,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -847,6 +855,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
             "changed_presence": sorted(evidence_id for evidence_id in set(before_evidence) & set(after_evidence) if before_evidence[evidence_id] != after_evidence[evidence_id]),
         },
         "generation_diff": _bundle_generation_diff(before_report, after_report),
+        "outcome_diff": _bundle_outcome_diff(before_report, after_report),
         "changed_fields": changed_fields,
     }
 
@@ -895,6 +904,19 @@ def _bundle_generation_diff(before_report: dict[str, Any], after_report: dict[st
     }
 
 
+def _bundle_outcome_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, int]:
+    before_value = before_report.get("launchservices_outcome_summary")
+    after_value = after_report.get("launchservices_outcome_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    return {
+        "completed": int(after.get("completed", 0)) - int(before.get("completed", 0)),
+        "remaining": int(after.get("remaining", 0)) - int(before.get("remaining", 0)),
+        "newly_blocked": max(0, int(after.get("blocked", 0)) - int(before.get("blocked", 0))),
+        "resolved": max(0, int(before.get("remaining", 0)) - int(after.get("remaining", 0))),
+    }
+
+
 def _sorted_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -905,6 +927,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     evidence = diff["evidence_diff"]
     files = diff["files"]
     generation = diff.get("generation_diff", {})
+    outcome = diff.get("outcome_diff", {})
     lines = [
         "Support bundle diff",
         f"Before: {diff['before']['path']}",
@@ -920,6 +943,12 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Added generations: {', '.join(generation.get('added', [])) if generation.get('added') else 'none'}",
         f"- Persisted generations: {', '.join(generation.get('persisted', [])) if generation.get('persisted') else 'none'}",
         f"- Regenerated generations: {', '.join(generation.get('regenerated', [])) if generation.get('regenerated') else 'none'}",
+        "",
+        "Outcome Diff",
+        f"- Completed: {outcome.get('completed', 0)}",
+        f"- Remaining: {outcome.get('remaining', 0)}",
+        f"- Newly blocked: {outcome.get('newly_blocked', 0)}",
+        f"- Resolved: {outcome.get('resolved', 0)}",
         "",
         "Changed fields",
         f"- {', '.join(diff['changed_fields']) if diff['changed_fields'] else 'none'}",
