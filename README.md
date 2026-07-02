@@ -6,12 +6,10 @@ macOS State Explorer is the current repository name for the public reference eng
 
 ## Project identity
 
-- **WASP Prism** is the public evidence-driven diagnostic platform within the WASP ecosystem.
-- This repository remains named `macos-state-explorer` until the Chrome Local Network reference case is fully solved.
+- **WASP Prism** is the future public project identity for this evidence-driven diagnostic project, with the repository rename deferred until after the Chrome Local Network reference case is solved.
+- This repository remains named `macos-state-explorer` until that reference case is fully solved.
 - Planned rename: `macos-state-explorer -> wasp-prism` after the Chrome Local Network reference case is complete.
-- **WASP Lens** remains the web/CDN-facing product.
-- **WASP Prism** is the diagnostic core/platform.
-- Some WASP engines and products may remain private.
+- Documentation describes only the public WASP Prism project.
 
 ## Current reference case
 
@@ -38,6 +36,7 @@ mse --help
 mse collect ~/Desktop/mse-fast --fast-report
 mse launchservices ~/Desktop/mse-ls
 mse launchservices outcome
+mse launchservices provenance
 mse trace local-network ~/Desktop/mse-local-network-trace
 mse report local-network --bundle ~/Desktop/mse-support-bundle
 mse doctor

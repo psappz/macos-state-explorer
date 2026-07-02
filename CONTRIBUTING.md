@@ -23,7 +23,7 @@ WASP stands for **Web Application Security & Performance**. The repository remai
 - Every domain-specific implementation must be an Engine.
 - Shared platform code belongs in core only when it is domain-neutral.
 - LaunchServices and Chrome Local Network behavior are reference-engine logic, not core policy.
-- Some WASP engines/products may remain private; public engines must still use the same core-vs-engine boundary.
+- Public engines must use the same core-vs-engine boundary.
 
 ## Development Setup
 
@@ -60,6 +60,10 @@ Pull requests should include:
 - Tests for changed behavior.
 - Notes about any macOS commands used.
 - Confirmation that no unauthorized OS-modifying operations were added.
-- Documentation updates for behavior, architecture, safety, or product-identity changes.
+- Documentation updates for behavior, architecture, safety, or project-identity changes.
 
 Every architecture-affecting PR must update docs. Documentation updates are part of the Definition of Done for architecture PRs.
+
+## Evidence-driven diagnostic lifecycle
+
+The Chrome Local Network reference case advances through diagnosis, trace collection, planning, selective execution, persistent validation, outcome analysis, and registration provenance analysis. Provenance analysis is pure analysis: it identifies likely producers, persistence mechanisms, regeneration sources, consumers, confidence, and evidence without mutation, repair, or planner changes.

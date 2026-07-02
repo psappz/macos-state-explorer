@@ -18,6 +18,7 @@ from macos_state_explorer.diagnostics.local_network.module import LOCAL_NETWORK_
 from macos_state_explorer.launchservices.analysis import analysis_records_from_snapshot_payload
 from macos_state_explorer.launchservices.generations import analyze_generations
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, outcome_summary, read_execute_plan_audit_history
+from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, local_network_provenance_summary
 from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation, remediation_plan_summary
 
 SolverEvidence = LocalNetworkEvidence
@@ -46,6 +47,7 @@ def build_local_network_solution(
         solution,
         remediation_plan_summary=_launchservices_remediation_summary(snapshot),
         launchservices_outcome_summary=_launchservices_outcome_summary(snapshot, launchservices_audit_log),
+        launchservices_provenance_summary=_launchservices_provenance_summary(snapshot),
     )
 
 
@@ -72,6 +74,14 @@ def _launchservices_outcome_summary(snapshot: Snapshot, audit_log: Path | Sequen
     records = analysis_records_from_snapshot_payload(payload)
     outcome = build_launchservices_outcome(analyze_generations(records), audit_history=read_execute_plan_audit_history(audit_log))
     return outcome_summary(outcome)
+
+
+def _launchservices_provenance_summary(snapshot: Snapshot) -> dict[str, Any]:
+    payload = next((observation.payload for observation in snapshot.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    records = analysis_records_from_snapshot_payload(payload)
+    provenance = build_launchservices_provenance(analyze_generations(records))
+    return local_network_provenance_summary(provenance)
 
 
 def load_trace_analysis(path: Path | None) -> dict[str, Any] | None:
