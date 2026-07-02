@@ -506,6 +506,7 @@ class DiagnosticSolution:
     launchservices_producer_evidence_summary: dict[str, Any] | None = None
     trace_correlation_summary: dict[str, Any] | None = None
     trace_timeline_summary: dict[str, Any] | None = None
+    networkextension_state_summary: dict[str, Any] | None = None
 
     def render_text(self) -> str:
         primary = self.repair_plan[0]
@@ -545,6 +546,10 @@ class DiagnosticSolution:
             lines.extend(["", render_trace_correlation_summary(self.trace_correlation_summary)])
         if self.trace_timeline_summary:
             lines.extend(["", _render_trace_timeline_summary(self.trace_timeline_summary)])
+        if self.networkextension_state_summary:
+            from macos_state_explorer.networkextension_state import render_networkextension_state_summary
+
+            lines.extend(["", render_networkextension_state_summary(self.networkextension_state_summary)])
 
         if self.rule_matches:
             lines.extend(["", "Rule explanation"])
@@ -611,6 +616,8 @@ class DiagnosticSolution:
             payload["trace_correlation_summary"] = self.trace_correlation_summary
         if self.trace_timeline_summary is not None:
             payload["trace_timeline_summary"] = self.trace_timeline_summary
+        if self.networkextension_state_summary is not None:
+            payload["networkextension_state_summary"] = self.networkextension_state_summary
         return payload
 
 
