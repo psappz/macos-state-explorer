@@ -34,6 +34,7 @@ from macos_state_explorer.launchservices.remediation_plan import (
     plan_launchservices_remediation,
     render_remediation_plan,
 )
+from macos_state_explorer.networkextension_correlation import build_networkextension_correlation, render_networkextension_correlation
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, render_networkextension_state
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
@@ -85,6 +86,29 @@ def networkextension_state_command(
         typer.echo(json_module.dumps(state.to_json_dict(), sort_keys=False))
     else:
         console.print(render_networkextension_state(state), markup=False)
+
+
+@networkextension_app.command("correlate")
+def networkextension_correlate_command(
+    root: list[Path] | None = typer.Option(None, "--root", help="Read-only NetworkExtension root or file to inspect; repeatable."),
+    trace: Path | None = typer.Option(None, "--trace", help="Optional read-only Local Network trace analysis directory or JSON file."),
+    json_output: bool = typer.Option(False, "--json", help="Emit deterministic JSON."),
+):
+    roots = root if root else default_networkextension_roots()
+    snap = create_snapshot(fast=True)
+    payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    records = analysis_records_from_snapshot_payload(payload)
+    correlation = build_networkextension_correlation(
+        analyze_generations(records),
+        records,
+        roots=roots,
+        trace_analysis=load_trace_analysis(trace),
+    )
+    if json_output:
+        typer.echo(json_module.dumps(correlation.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_networkextension_correlation(correlation), markup=False)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -931,7 +955,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -955,6 +979,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "cleanup_checklist_diff": _bundle_cleanup_checklist_diff(before_report, after_report),
         "cleanup_verification_diff": _bundle_cleanup_verification_diff(before_report, after_report),
         "networkextension_state_diff": _bundle_networkextension_state_diff(before_report, after_report),
+        "networkextension_correlation_diff": _bundle_networkextension_correlation_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1149,6 +1174,28 @@ def _bundle_networkextension_state_diff(before_report: dict[str, Any], after_rep
     }
 
 
+def _bundle_networkextension_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("networkextension_correlation_summary")
+    after_value = after_report.get("networkextension_correlation_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    before_ids = set(_sorted_string_list(before.get("generation_ids")))
+    after_ids = set(_sorted_string_list(after.get("generation_ids")))
+    before_confirmed = set(_sorted_string_list(before.get("confirmed_generation_ids")))
+    after_confirmed = set(_sorted_string_list(after.get("confirmed_generation_ids")))
+    before_conflicting = set(_sorted_string_list(before.get("conflicting_generation_ids")))
+    after_conflicting = set(_sorted_string_list(after.get("conflicting_generation_ids")))
+    before_unknown = set(_sorted_string_list(before.get("unknown_generation_ids")))
+    after_unknown = set(_sorted_string_list(after.get("unknown_generation_ids")))
+    return {
+        "newly_confirmed_generations": sorted(after_confirmed - before_confirmed),
+        "new_conflicting_generations": sorted(after_conflicting - before_conflicting),
+        "resolved_unknown_generations": sorted(before_unknown - after_unknown),
+        "added_generations": sorted(after_ids - before_ids),
+        "removed_generations": sorted(before_ids - after_ids),
+    }
+
+
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("trace_correlation_summary")
     after_value = after_report.get("trace_correlation_summary")
@@ -1224,6 +1271,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     cleanup_checklist = diff.get("cleanup_checklist_diff", {})
     cleanup_verification = diff.get("cleanup_verification_diff", {})
     networkextension_state = diff.get("networkextension_state_diff", {})
+    networkextension_correlation = diff.get("networkextension_correlation_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1289,6 +1337,13 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Changed references: {', '.join(networkextension_state.get('changed_references', [])) if networkextension_state.get('changed_references') else 'none'}",
         f"- Resolved unknowns: {', '.join(networkextension_state.get('resolved_unknown_items', [])) if networkextension_state.get('resolved_unknown_items') else 'none'}",
         f"- New unknowns: {', '.join(networkextension_state.get('new_unknown_items', [])) if networkextension_state.get('new_unknown_items') else 'none'}",
+        "",
+        "NetworkExtension Correlation Diff",
+        f"- Newly confirmed generations: {', '.join(networkextension_correlation.get('newly_confirmed_generations', [])) if networkextension_correlation.get('newly_confirmed_generations') else 'none'}",
+        f"- New conflicting generations: {', '.join(networkextension_correlation.get('new_conflicting_generations', [])) if networkextension_correlation.get('new_conflicting_generations') else 'none'}",
+        f"- Resolved unknown generations: {', '.join(networkextension_correlation.get('resolved_unknown_generations', [])) if networkextension_correlation.get('resolved_unknown_generations') else 'none'}",
+        f"- Added generations: {', '.join(networkextension_correlation.get('added_generations', [])) if networkextension_correlation.get('added_generations') else 'none'}",
+        f"- Removed generations: {', '.join(networkextension_correlation.get('removed_generations', [])) if networkextension_correlation.get('removed_generations') else 'none'}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",

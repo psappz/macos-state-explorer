@@ -62,4 +62,39 @@ Local Network differs from normal TCC permissions because current evidence does 
 
 The NetworkExtension state engine is strictly read-only. It does not repair, delete, mutate preferences, rebuild caches, reset authorization, escalate privileges, reboot, or trigger planner/solver/diagnostic changes. Support bundles include `networkextension-state.json` and `networkextension-state.txt`, and bundle diffs include a `NetworkExtension State Diff` section for deterministic before/after comparison.
 
+## NetworkExtension identity correlation
+
+`mse networkextension correlate` is the next read-only step after state observation. It compares identities across existing evidence sources rather than adding repair behavior.
+
+The correlation graph can use only observable identity fields:
+
+- LaunchServices generation and registration records
+- bundle identifier
+- application UUID
+- Team ID
+- code signing identity when present in readable evidence
+- executable or application path
+- NetworkExtension preference records
+- trace identity fields
+- RunningBoard identity strings present in supplied trace analysis
+- SecurityPrivacyExtension references present in preference or trace artifacts
+
+For each Chrome generation the command reports one of four relationships:
+
+- `confirmed_identical`: strong observable identity, for example a shared application UUID plus supporting fields.
+- `probable_identical`: multiple non-conflicting observable fields match, but the identity is not proven by a shared UUID.
+- `conflicting_identity`: observable fields disagree; every conflict is listed.
+- `no_observable_relationship`: no safe observed relationship exists between the generation and NetworkExtension identity records.
+
+The graph keeps evidence classes separate:
+
+- `Observed`: directly present in LaunchServices, NetworkExtension artifacts, or supplied traces.
+- `Correlated`: produced by comparing two or more observed fields.
+- `Inferred`: not used for identity proof; filename-only matches are not sufficient.
+- `Unknown`: required evidence is missing or not readable.
+
+This correlation may identify shared UUIDs, reused bundle identifiers, shared Team IDs, shared executable paths, trace identity matches, and conflicting identity records. It still does not prove the true producer unless observable evidence connects a producer action to the stale registration. Missing producer evidence remains `Unknown`.
+
+Support bundles include `networkextension-correlation.json` and `networkextension-correlation.txt`, and bundle diffs include `NetworkExtension Correlation Diff`.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.
