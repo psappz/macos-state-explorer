@@ -23,6 +23,8 @@ Phase 2 is investigation-driven: modeled provenance must be kept separate from o
 
 The Regeneration Analysis Engine answers which observed or correlated source appears to recreate LaunchServices registrations after removal. It is evidence-only: every claim is categorized as Observed, Correlated, Inferred, or Unknown, and it performs no mutation, repair, planner, solver, or diagnosis changes.
 
+`mse launchservices cleanup-checklist` is the manual safety bridge from analysis toward cleanup. It emits deterministic JSON/text instructions for remaining non-automatic LaunchServices sources such as Trash, mounted installers, updater-owned paths, and unknown-regenerator Chrome application generations. It is read-only and never deletes, unregisters, ejects, resets, or mutates system state.
+
 ## Install
 
 ```bash
@@ -42,6 +44,7 @@ mse launchservices ~/Desktop/mse-ls
 mse launchservices outcome
 mse launchservices provenance
 mse launchservices regeneration
+mse launchservices cleanup-checklist
 mse trace local-network ~/Desktop/mse-local-network-trace
 mse report local-network --bundle ~/Desktop/mse-support-bundle
 mse doctor

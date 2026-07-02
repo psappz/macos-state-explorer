@@ -10,6 +10,7 @@ from macos_state_explorer.core.model import Snapshot
 from macos_state_explorer.diagnostics.framework import build_support_bundle
 from macos_state_explorer.diagnostics.local_network.verification import LocalNetworkVerification, verify_local_network
 from macos_state_explorer.launchservices.analysis import LaunchServicesAnalysis, analysis_from_snapshot_payload, analysis_records_from_snapshot_payload
+from macos_state_explorer.launchservices.cleanup_checklist import build_launchservices_cleanup_checklist, local_network_cleanup_checklist_summary, render_cleanup_checklist_summary, render_launchservices_cleanup_checklist
 from macos_state_explorer.launchservices.generations import analyze_generations
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, read_execute_plan_audit_history, render_launchservices_outcome, render_outcome_summary
 from macos_state_explorer.launchservices.producer_evidence import build_launchservices_producer_evidence, render_launchservices_producer_evidence, render_producer_evidence_summary
@@ -58,6 +59,7 @@ class LocalNetworkReport:
         if self.solution.trace_timeline_summary is not None:
             payload["trace_timeline_summary"] = self.solution.trace_timeline_summary
         payload["launchservices_regeneration_summary"] = local_network_regeneration_summary(_report_regeneration(self, self.launchservices_audit_log))
+        payload["launchservices_cleanup_checklist_summary"] = local_network_cleanup_checklist_summary(_report_cleanup_checklist(self))
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -121,6 +123,8 @@ class LocalNetworkReport:
             lines.extend(["", _render_trace_timeline_summary(payload["trace_timeline_summary"])])
         if payload.get("launchservices_regeneration_summary"):
             lines.extend(["", render_regeneration_summary(payload["launchservices_regeneration_summary"])])
+        if payload.get("launchservices_cleanup_checklist_summary"):
+            lines.extend(["", render_cleanup_checklist_summary(payload["launchservices_cleanup_checklist_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -216,6 +220,9 @@ def write_local_network_support_bundle(
     regeneration = _report_regeneration(effective_report, effective_audit_log)
     (bundle / "regeneration.json").write_text(json.dumps(regeneration.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "regeneration.txt").write_text(render_launchservices_regeneration(regeneration) + "\n")
+    cleanup_checklist = _report_cleanup_checklist(effective_report)
+    (bundle / "cleanup-checklist.json").write_text(json.dumps(cleanup_checklist.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "cleanup-checklist.txt").write_text(render_launchservices_cleanup_checklist(cleanup_checklist) + "\n")
     return bundle
 
 
@@ -250,6 +257,15 @@ def _report_regeneration(report: LocalNetworkReport, audit_log: Path | Sequence[
         analyze_generations(analysis_records_from_snapshot_payload(payload)),
         trace_analysis=report.trace_analysis,
         audit_history=read_execute_plan_audit_history(audit_log),
+    )
+
+
+def _report_cleanup_checklist(report: LocalNetworkReport):
+    payload = next((observation.payload for observation in report.snapshot.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    return build_launchservices_cleanup_checklist(
+        analyze_generations(analysis_records_from_snapshot_payload(payload)),
+        trace_analysis=report.trace_analysis,
     )
 
 

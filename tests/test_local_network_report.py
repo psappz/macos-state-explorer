@@ -281,6 +281,8 @@ def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_p
     assert result.exit_code == 0
     assert result.stdout.startswith("Local Network diagnostic report")
     assert _relative_files(bundle_dir) == [
+        "cleanup-checklist.json",
+        "cleanup-checklist.txt",
         "command.json",
         "environment.json",
         "launchservices-analysis.json",
@@ -420,6 +422,8 @@ def test_report_bundle_without_trace_records_no_trace_artifacts(monkeypatch, tmp
 
     assert result.exit_code == 0
     assert _relative_files(bundle_dir) == [
+        "cleanup-checklist.json",
+        "cleanup-checklist.txt",
         "command.json",
         "environment.json",
         "launchservices-analysis.json",

@@ -283,4 +283,4 @@ def test_regeneration_documentation_and_version_updated():
     assert "Observed" in docs and "Correlated" in docs and "Inferred" in docs and "Unknown" in docs
     assert "WASP Prism" in docs
     assert "WASP Lens" not in docs
-    assert 'version = "1.1.0"' in pyproject
+    assert 'version = "1.1.1"' in pyproject

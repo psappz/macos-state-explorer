@@ -8,14 +8,14 @@ The repository stays named `macos-state-explorer` until the Chrome Local Network
 
 ## Architecture direction
 
-WASP Prism separates reusable diagnostic platform capability from domain-specific engines.
+WASP Prism separates reusable diagnostic project capability from domain-specific engines.
 
 ### Core vs Engine Principle
 
 - Core must not contain domain-specific logic.
 - Every domain-specific implementation must be an Engine.
 - Core owns domain-neutral snapshot, evidence, reporting, bundle, diff, audit-ingestion, CLI plumbing, and support-bundle primitives.
-- Engines own domain-specific collectors, parsers, classifiers, planners, outcome models, provenance models, producer-evidence acquisition, trace-correlation evidence, high-fidelity trace acquisition/timeline evidence, regeneration analysis evidence, remediation constraints, and user-facing interpretation.
+- Engines own domain-specific collectors, parsers, classifiers, planners, outcome models, provenance models, producer-evidence acquisition, trace-correlation evidence, high-fidelity trace acquisition/timeline evidence, regeneration analysis evidence, cleanup-checklist guidance, remediation constraints, and user-facing interpretation.
 - Architecture-affecting PRs must update documentation.
 
 ## Layers

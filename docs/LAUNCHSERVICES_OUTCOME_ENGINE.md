@@ -15,6 +15,7 @@ Phase 1 intentionally separates the LaunchServices workflow into deterministic r
 9. trace correlation: distinguish isolated observations from events that share a supported time-window/process context.
 10. high-fidelity trace acquisition: normalize timestamp, process, PID, thread, executable, subsystem, source, path, operation, confidence, and raw reference fields for descriptive timelines.
 11. regeneration analysis: classify evidence about which observed or correlated source recreates LaunchServices registrations after removal.
+12. cleanup checklist: produce a read-only, deterministic manual execution checklist for remaining non-automatic sources.
 
 ## Why outcome is pure analysis
 
@@ -74,6 +75,14 @@ The timeline does not change diagnosis, repair ranking, planner behavior, or mut
 Every claim is categorized as `Observed`, `Correlated`, `Inferred`, or `Unknown`. Only Observed and Correlated evidence may drive high confidence. Unknown evidence remains explicit and low-confidence; the engine must not invent a PID, process, regenerator, or repair action.
 
 The Regeneration Analysis Engine does not mutate LaunchServices, does not add repair functionality, does not change planner behavior, does not change solver behavior, and does not change diagnosis. Local Network reports include a compact regeneration summary, support bundles include `regeneration.json` and `regeneration.txt`, and bundle diff reports Regeneration Diff.
+
+## Cleanup Checklist manual safety bridge
+
+`mse launchservices cleanup-checklist` is pure read-only guidance for the Chrome Local Network reference case. It turns the remaining non-automatic LaunchServices sources into deterministic manual checklist items without adding deletion, unregister, eject, reset, planner execution, solver, repair, or diagnosis behavior.
+
+Checklist items are separated into Trash registrations, mounted installer registrations, updater registrations, and unknown-regenerator Chrome application generations. Each item includes generation identity, producer, regenerator if known, confidence, classification, paths, registration identifiers, why automatic cleanup is not recommended, exact manual action, verification command, and expected post-condition.
+
+The command is conservative by design: Trash cleanup requires Finder inspection and disposal judgment; mounted installers require manual eject/reboot or System Settings relaunch; updater-owned paths require manual review or vendor updater cleanup; unknown Chrome application generations recommend manual Chrome reinstall only after Trash and mounted installer branches are cleared. Local Network reports include a compact cleanup checklist summary, support bundles include `cleanup-checklist.json` and `cleanup-checklist.txt`, and bundle diff reports Cleanup Checklist Diff.
 
 ## Manual-review terminal state
 
