@@ -683,7 +683,7 @@ def trace_timeline_cmd(
     if json_output:
         typer.echo(json_module.dumps(timeline.to_json_dict(), sort_keys=False))
     else:
-        console.print(render_trace_timeline(timeline), markup=False)
+        console.print(render_trace_timeline(timeline), markup=False, soft_wrap=True)
 
 
 @experiment_app.command("local-network")

@@ -162,7 +162,7 @@ def analyze_trace(out: Path) -> dict[str, Any]:
             if signals:
                 normalized_events.extend(_normalized_events_for_line(name, line, signals, base_date))
                 timeline_events.extend(_timeline_events_for_line(name, line, signals, base_date))
-            for match in PATH_RE.findall(line):
+            for match in _paths_for_source_line(name, line):
                 path = match.rstrip(":,);")
                 rec = paths.setdefault(path, {"count": 0, "sources": set(), "examples": []})
                 rec["count"] += 1
@@ -328,7 +328,7 @@ def _normalize_timeline_event(event: dict[str, Any]) -> dict[str, Any]:
     return {
         "timestamp": timestamp,
         "timestamp_sort": timestamp_sort,
-        "process": str(event.get("process", "")),
+        "process": str(event.get("process") or "unknown"),
         "pid": event.get("pid"),
         "parent_pid": event.get("parent_pid"),
         "thread_id": event.get("thread_id"),
@@ -346,12 +346,20 @@ def _normalize_timeline_event(event: dict[str, Any]) -> dict[str, Any]:
 
 def _normalized_events_for_line(source_file: str, line: str, signals: list[tuple[str, str]], base_date: str) -> list[dict[str, Any]]:
     timestamp = _timestamp_for_line(line)
-    process = _process_for_line(line)
-    pid, thread_id = _pid_thread_for_line(line, process)
-    paths = [path.rstrip(":,);") for path in PATH_RE.findall(line)]
-    file_path = _first_path(paths) or ""
-    operation = _operation_for_line(line)
     source = _source_kind(source_file)
+    if source == "fs_usage":
+        parsed = _parse_fs_usage_line(line)
+        process = parsed["process"]
+        pid = parsed["pid"]
+        thread_id = None
+        file_path = parsed["path"]
+        operation = parsed["operation"]
+    else:
+        process = _process_for_line(line)
+        pid, thread_id = _pid_thread_for_line(line, process)
+        paths = [path.rstrip(":,);") for path in PATH_RE.findall(line)]
+        file_path = _first_path(paths) or ""
+        operation = _operation_for_line(line)
     common = {
         "timestamp": timestamp,
         "timestamp_sort": _timestamp_sort(timestamp, line, base_date),
@@ -406,8 +414,13 @@ def _timeline_events_for_line(
     base_date: str,
 ) -> list[dict[str, Any]]:
     timestamp = _timestamp_for_line(line)
-    process = _process_for_line(line)
-    paths = [path.rstrip(":,);") for path in PATH_RE.findall(line)]
+    if _source_kind(source_file) == "fs_usage":
+        parsed = _parse_fs_usage_line(line)
+        process = parsed["process"]
+        paths = [parsed["path"]] if parsed["path"] else []
+    else:
+        process = _process_for_line(line)
+        paths = [path.rstrip(":,);") for path in PATH_RE.findall(line)]
     return [
         {
             "timestamp": timestamp,
@@ -461,6 +474,87 @@ def _process_for_line(line: str) -> str:
         if process.lower() in lowered:
             return process
     return ""
+
+
+def _paths_for_source_line(source_file: str, line: str) -> list[str]:
+    if _source_kind(source_file) == "fs_usage":
+        parsed = _parse_fs_usage_line(line)
+        return [parsed["path"]] if parsed["path"] else []
+    return PATH_RE.findall(line)
+
+
+def _parse_fs_usage_line(line: str) -> dict[str, Any]:
+    path = _fs_usage_path(line)
+    prefix = line
+    if path:
+        prefix = line.split(path, 1)[0]
+    timestamp = _timestamp_for_line(prefix)
+    if timestamp and prefix.startswith(timestamp):
+        prefix = prefix[len(timestamp) :]
+    tokens = prefix.strip().split()
+    operation, operation_index = _fs_usage_operation(tokens, bool(path))
+    if operation_index is None:
+        attribution_tokens = _tokens_before_operation(tokens, operation)
+    else:
+        before_operation = tokens[:operation_index]
+        after_operation = tokens[operation_index + 1 :]
+        attribution_tokens = before_operation if before_operation else after_operation
+    if operation == "cache access":
+        process, pid = "unknown", None
+    else:
+        process, pid = _parse_fs_usage_attribution(attribution_tokens)
+    return {
+        "process": process or "unknown",
+        "pid": pid,
+        "operation": operation,
+        "path": path,
+    }
+
+
+def _fs_usage_path(line: str) -> str:
+    match = re.search(r"(/.*?\.csstore)(?=\s+(?:\d+\.\d+|[A-Z][A-Z0-9_/-]*$)|\s*$)", line)
+    if match:
+        return match.group(1).rstrip(":,);")
+    fallback = re.search(r"(/.*?\.csstore)", line)
+    return fallback.group(1).rstrip(":,);") if fallback else ""
+
+
+def _fs_usage_operation(tokens: list[str], has_path: bool) -> tuple[str, int | None]:
+    for index in range(len(tokens) - 1, -1, -1):
+        normalized = _normalize_operation(tokens[index])
+        if normalized in {"open", "read", "stat", "access", "mmap", "close", "launch", "terminate", "registration"}:
+            return normalized, index
+    return ("cache access" if has_path else "event"), None
+
+
+def _tokens_before_operation(tokens: list[str], operation: str) -> list[str]:
+    if operation == "cache access":
+        return [token for token in tokens if token not in {"???", "-"}]
+    for index in range(len(tokens) - 1, -1, -1):
+        if _normalize_operation(tokens[index]) == operation:
+            return tokens[:index]
+    return tokens
+
+
+def _parse_fs_usage_attribution(tokens: list[str]) -> tuple[str, int | None]:
+    tokens = [token for token in tokens if token not in {"???", "-"}]
+    if not tokens:
+        return "unknown", None
+    if tokens[0].isdigit() and len(tokens) >= 2:
+        return _clean_process_token(tokens[1]), int(tokens[0])
+    candidate = tokens[-1]
+    bracket = re.fullmatch(r"(.+?)\[(\d+)\]", candidate)
+    if bracket:
+        return _clean_process_token(bracket.group(1)), int(bracket.group(2))
+    dotted = re.fullmatch(r"(.+?)\.(\d+)", candidate)
+    if dotted:
+        return _clean_process_token(dotted.group(1)), int(dotted.group(2))
+    cleaned = _clean_process_token(candidate)
+    return (cleaned, None) if cleaned else ("unknown", None)
+
+
+def _clean_process_token(token: str) -> str:
+    return token.strip().strip(":,;")
 
 
 def _source_kind(source_file: str) -> str:
@@ -535,10 +629,10 @@ def _normalize_operation(operation: str) -> str:
 
 
 def _confidence_for_event(source: str, process: str, pid: int | None, file_path: str, operation: str) -> float:
-    score = 0.45
+    score = 0.4
     if source in {"fs_usage", "log_stream"}:
         score += 0.15
-    if process:
+    if process and process != "unknown":
         score += 0.1
     if pid is not None:
         score += 0.1
