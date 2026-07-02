@@ -16,6 +16,7 @@ from macos_state_explorer.launchservices.producer_evidence import build_launchse
 from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, render_launchservices_provenance, render_provenance_summary
 from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
+from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, render_trace_correlation_evidence, render_trace_correlation_summary
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,8 @@ class LocalNetworkReport:
             payload["launchservices_provenance_summary"] = self.solution.launchservices_provenance_summary
         if self.solution.launchservices_producer_evidence_summary is not None:
             payload["launchservices_producer_evidence_summary"] = self.solution.launchservices_producer_evidence_summary
+        if self.solution.trace_correlation_summary is not None:
+            payload["trace_correlation_summary"] = self.solution.trace_correlation_summary
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -107,6 +110,8 @@ class LocalNetworkReport:
             lines.extend(["", render_provenance_summary(payload["launchservices_provenance_summary"])])
         if payload.get("launchservices_producer_evidence_summary"):
             lines.extend(["", render_producer_evidence_summary(payload["launchservices_producer_evidence_summary"])])
+        if payload.get("trace_correlation_summary"):
+            lines.extend(["", render_trace_correlation_summary(payload["trace_correlation_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -193,6 +198,9 @@ def write_local_network_support_bundle(
     producer_evidence = _report_producer_evidence(effective_report)
     (bundle / "producer-evidence.json").write_text(json.dumps(producer_evidence.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "producer-evidence.txt").write_text(render_launchservices_producer_evidence(producer_evidence) + "\n")
+    trace_correlation = _report_trace_correlation(effective_report)
+    (bundle / "trace-correlation.json").write_text(json.dumps(trace_correlation.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "trace-correlation.txt").write_text(render_trace_correlation_evidence(trace_correlation) + "\n")
     return bundle
 
 
@@ -210,6 +218,10 @@ def _report_provenance(report: LocalNetworkReport):
 
 def _report_producer_evidence(report: LocalNetworkReport):
     return build_launchservices_producer_evidence(report.snapshot, trace_analysis=report.trace_analysis)
+
+
+def _report_trace_correlation(report: LocalNetworkReport):
+    return build_trace_correlation_evidence(report.trace_analysis)
 
 
 def build_local_network_report(

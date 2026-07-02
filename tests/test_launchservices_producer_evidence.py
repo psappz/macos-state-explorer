@@ -178,6 +178,33 @@ def test_producer_evidence_trace_marks_securityprivacy_csstore_system_settings_a
         assert all(item["raw_reference"] for item in matches)
 
 
+def test_securityprivacy_csstore_same_trace_window_is_consumer_evidence():
+    evidence = build_launchservices_producer_evidence(snapshot(), trace_analysis=trace_analysis(), trace_source=Path("trace-dir"))
+    payload = evidence.to_json_dict()
+
+    matches = evidence_by_type(payload, "security_privacy_trace_reads_csstore")
+    assert matches
+    assert all(item["observed"] is True for item in matches)
+    assert all(item["category"] == "observed_consumer" for item in matches)
+    assert all("same trace window/process context" in str(item["reasoning"]) for item in matches)
+    assert "SecurityPrivacyExtension .csstore consumer evidence observed" in payload["summary"]["consumer_evidence"]
+
+
+def test_securityprivacy_and_csstore_without_same_process_context_is_not_consumer_evidence():
+    trace = trace_analysis()
+    trace["timeline_events"] = [
+        {"timestamp": "2026-07-02 10:00:00", "source_file": "log_stream.txt", "signal": "securityprivacyextension", "process": "SecurityPrivacyExtension", "paths": [], "line": "SecurityPrivacyExtension opened Privacy pane"},
+        {"timestamp": "2026-07-02 10:00:01", "source_file": "fs_usage.txt", "signal": "launchservices_csstore", "process": "OtherProcess", "paths": ["/System/Library/LaunchServices/com.apple.LaunchServices-3027.csstore"], "line": "OtherProcess read .csstore"},
+    ]
+    evidence = build_launchservices_producer_evidence(snapshot(), trace_analysis=trace, trace_source=Path("trace-dir"))
+    payload = evidence.to_json_dict()
+
+    matches = evidence_by_type(payload, "security_privacy_trace_reads_csstore")
+    assert matches
+    assert all(item["observed"] is False for item in matches)
+    assert "SecurityPrivacyExtension .csstore consumer evidence observed" not in payload["summary"]["consumer_evidence"]
+
+
 def test_producer_evidence_cli_json_and_human_output(monkeypatch, tmp_path):
     trace_dir = write_trace(tmp_path / "trace")
     monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot())

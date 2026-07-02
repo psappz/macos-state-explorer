@@ -12,6 +12,7 @@ Phase 1 intentionally separates the LaunchServices workflow into deterministic r
 6. outcome: explain the remaining state and whether safe automatic remediation has reached its limit.
 7. registration provenance: explain who likely produced each relevant registration, why it persists, what may regenerate it, and which consumers can use it.
 8. producer evidence: acquire observed producer/consumer signals separately from modeled provenance before any further repair milestone is considered.
+9. trace correlation: distinguish isolated observations from events that share a supported time-window/process context.
 
 ## Why outcome is pure analysis
 
@@ -48,9 +49,15 @@ The model only reports what available evidence supports. Unknown producers, pers
 
 Phase 2 is investigation-driven and keeps the Chrome Local Network reference case as the highest priority. `mse launchservices producer-evidence` is a pure-analysis command that answers what evidence supports current provenance claims without mutation, repair actions, planner changes, or execution changes.
 
-Modeled provenance must be separated from observed producer evidence, observed consumer evidence, inferred persistence mechanism, and unknown signals. Snapshot signals such as lsregister dump paths, bundle identifiers, missing paths, Trash paths, mounted-volume paths, updater paths, active application paths, and `.csstore` candidate files are reported as observed evidence. Trace-backed signals such as SecurityPrivacyExtension `.csstore` reads, System Settings Privacy UI activity, and RunningBoard activity are observed only when a trace is supplied. Without a trace, those signals are explicitly reported as unknown rather than implied.
+Modeled provenance must be separated from observed producer evidence, observed consumer evidence, inferred persistence mechanism, and unknown signals. Snapshot signals such as lsregister dump paths, bundle identifiers, missing paths, Trash paths, mounted-volume paths, updater paths, active application paths, and `.csstore` candidate files are reported as observed evidence. Trace-backed signals such as SecurityPrivacyExtension `.csstore` reads, System Settings Privacy UI activity, and RunningBoard activity are observed only when a trace is supplied. SecurityPrivacyExtension plus `.csstore` access in the same trace window/process context is reported as observed consumer evidence, not merely modeled provenance. Without a trace, those signals are explicitly reported as unknown rather than implied.
 
 The repository remains `macos-state-explorer`; WASP Prism is the future public project identity.
+
+## Trace Correlation Evidence investigation
+
+`mse trace correlate <trace-dir>` is pure analysis that asks whether observed trace events can be correlated, not just whether they happened. It preserves three layers: observed signals, supported correlations, and cautious inferences. Two observations are never promoted to a correlation unless the trace supplies supporting evidence such as a shared process and same time window.
+
+Trace correlation is used by Local Network summaries and support bundles as `trace-correlation.json` and `trace-correlation.txt`, with bundle diff support for added, removed, or changed correlations. This investigation remains scoped to the Chrome Local Network reference case and does not add repair, planner, mutation, or new Diagnostic Engine behavior.
 
 ## Manual-review terminal state
 

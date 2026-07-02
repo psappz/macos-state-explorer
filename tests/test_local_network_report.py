@@ -292,6 +292,8 @@ def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_p
         "provenance.txt",
         "report.json",
         "report.txt",
+        "trace-correlation.json",
+        "trace-correlation.txt",
         "trace/analysis.json",
         "trace/log_stream.txt",
     ]
@@ -425,6 +427,8 @@ def test_report_bundle_without_trace_records_no_trace_artifacts(monkeypatch, tmp
         "provenance.txt",
         "report.json",
         "report.txt",
+        "trace-correlation.json",
+        "trace-correlation.txt",
     ]
     report_json = json.loads((bundle_dir / "report.json").read_text())
     assert report_json["trace"]["available"] is False
