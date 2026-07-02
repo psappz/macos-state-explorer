@@ -120,6 +120,14 @@ def planning_records() -> list[LaunchServicesRecord]:
     ]
 
 
+def skipped_only_records() -> list[LaunchServicesRecord]:
+    return [
+        item
+        for item in planning_records()
+        if "148.0.7778.216" not in (item.path_clean or item.path or "")
+    ]
+
+
 def snapshot(records: list[LaunchServicesRecord]) -> Snapshot:
     return Snapshot(
         host="plan-host",
@@ -563,7 +571,7 @@ def test_launchservices_execute_plan_confirm_audit_is_deterministic(monkeypatch,
 
     assert result.exit_code == 0
     events = [json.loads(line) for line in audit_log.read_text().splitlines()]
-    assert len(events) == 1
+    assert len(events) == 2
     assert list(events[0]) == ["event", "command", "plan_id", "generation_id", "registration_ids", "mutation_primitives", "commands", "verification", "before_generation_count", "after_generation_count", "errors", "rollback_metadata"]
     assert events[0]["event"] == "launchservices_execute_plan_generation"
     assert events[0]["command"] == "launchservices execute-plan"
@@ -575,6 +583,50 @@ def test_launchservices_execute_plan_confirm_audit_is_deterministic(monkeypatch,
     assert primitive["affected_registration_ids"]
     assert events[0]["before_generation_count"] > events[0]["after_generation_count"]
     assert events[0]["verification"]["result"] == "MUTATED_AND_REMOVED"
+    run_event = events[1]
+    assert list(run_event) == ["event", "command", "plan_id", "confirmed", "status", "final_verdict", "before_generation_count", "after_generation_count", "generation_diff", "executed_step_count", "skipped_step_count", "commands_executed", "errors"]
+    assert run_event["event"] == "launchservices_execute_plan_run"
+    assert run_event["status"] == "MUTATED_AND_REMOVED"
+    assert run_event["executed_step_count"] == 1
+
+
+def test_launchservices_execute_plan_confirm_writes_audit_for_unknown_skipped_only_run(monkeypatch, tmp_path):
+    records = skipped_only_records()
+    audit_log = tmp_path / "audit" / "unknown.jsonl"
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(records))
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "UNKNOWN"
+    assert payload["executed_steps"] == []
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert len(events) == 1
+    assert events[0]["event"] == "launchservices_execute_plan_run"
+    assert events[0]["status"] == "UNKNOWN"
+    assert events[0]["executed_step_count"] == 0
+    assert events[0]["skipped_step_count"] == len(payload["skipped_steps"])
+    assert events[0]["errors"] == []
+
+
+def test_launchservices_execute_plan_confirm_writes_run_audit_for_failed_execution(monkeypatch, tmp_path):
+    before_records = planning_records()
+    audit_log = tmp_path / "audit" / "failed.jsonl"
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(before_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 13, "stdout": "", "stderr": "permission denied"})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert [event["event"] for event in events] == ["launchservices_execute_plan_generation", "launchservices_execute_plan_run"]
+    assert events[-1]["status"] == "MUTATION_FAILED"
+    assert events[-1]["final_verdict"] == payload["final_verdict"]
+    assert events[-1]["errors"]
 
 
 def test_launchservices_execute_plan_confirm_human_output_marks_manual_review_not_executed(monkeypatch):

@@ -235,7 +235,7 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
     if status == "MUTATED_AND_REMOVED":
         after_analysis = current_analysis
     generation_diff = _generation_diff(before_analysis, after_analysis, [str(step.get("generation_id")) for step in executed_steps if isinstance(step, dict)])
-    return {
+    execution = {
         "command": "launchservices execute-plan",
         "plan_id": plan.plan_id,
         "dry_run": False,
@@ -256,6 +256,8 @@ def _launchservices_execute_plan_confirm(plan: LaunchServicesRemediationPlan, be
         "errors": errors,
         "message": "Executed only PLAN_ONLY_SAFE LaunchServices generation steps and verified persistent removal." if status == "MUTATED_AND_REMOVED" else "Stopped immediately after mutation did not produce persistent LaunchServices removal.",
     }
+    _write_launchservices_run_audit(audit_log, execution)
+    return execution
 
 
 def _fresh_launchservices_generation_analysis():
@@ -461,6 +463,31 @@ def _write_launchservices_generation_audit(path: Path | None, plan_id: str, step
         "errors": step_result["errors"],
         "rollback_metadata": step_result["rollback_metadata"],
     }
+    _append_jsonl_audit_event(path, event)
+
+
+def _write_launchservices_run_audit(path: Path | None, execution: dict[str, object]) -> None:
+    if path is None:
+        return
+    event = {
+        "event": "launchservices_execute_plan_run",
+        "command": "launchservices execute-plan",
+        "plan_id": execution["plan_id"],
+        "confirmed": execution["confirmed"],
+        "status": execution["status"],
+        "final_verdict": execution["final_verdict"],
+        "before_generation_count": execution["before_generation_count"],
+        "after_generation_count": execution["after_generation_count"],
+        "generation_diff": execution["generation_diff"],
+        "executed_step_count": len(execution.get("executed_steps", [])) if isinstance(execution.get("executed_steps"), list) else 0,
+        "skipped_step_count": len(execution.get("skipped_steps", [])) if isinstance(execution.get("skipped_steps"), list) else 0,
+        "commands_executed": execution["commands_executed"],
+        "errors": execution["errors"],
+    }
+    _append_jsonl_audit_event(path, event)
+
+
+def _append_jsonl_audit_event(path: Path, event: dict[str, object]) -> None:
     expanded = path.expanduser()
     expanded.parent.mkdir(parents=True, exist_ok=True)
     with expanded.open("a") as handle:
