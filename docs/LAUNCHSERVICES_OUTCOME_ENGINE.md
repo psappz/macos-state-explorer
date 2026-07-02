@@ -11,6 +11,7 @@ Phase 1 intentionally separates the LaunchServices workflow into deterministic r
 5. validation: rebuild a fresh LaunchServices analysis after mutation and count remediation only when the planned generation is persistently removed.
 6. outcome: explain the remaining state and whether safe automatic remediation has reached its limit.
 7. registration provenance: explain who likely produced each relevant registration, why it persists, what may regenerate it, and which consumers can use it.
+8. producer evidence: acquire observed producer/consumer signals separately from modeled provenance before any further repair milestone is considered.
 
 ## Why outcome is pure analysis
 
@@ -42,6 +43,14 @@ Audit history is analysis input only; it never triggers mutation. Audit-informed
 Phase 2 moves from repair to provenance. The Registration Provenance Engine is pure analysis: it does not mutate LaunchServices, does not add repair functionality, and does not change planner behavior. For each relevant registration it records registration identity, application family, generation, path, producer, producer confidence, producer reasoning, persistence source, regeneration source, consumer set, confidence, and evidence.
 
 The model only reports what available evidence supports. Unknown producers, persistence sources, or regeneration sources remain `Unknown`/`unknown` with low confidence rather than speculative labels. Provenance output is available through `mse launchservices provenance`, Local Network summaries, support bundles as `provenance.json` and `provenance.txt`, and support-bundle provenance diff.
+
+## LaunchServices Producer Evidence investigation
+
+Phase 2 is investigation-driven and keeps the Chrome Local Network reference case as the highest priority. `mse launchservices producer-evidence` is a pure-analysis command that answers what evidence supports current provenance claims without mutation, repair actions, planner changes, or execution changes.
+
+Modeled provenance must be separated from observed producer evidence, observed consumer evidence, inferred persistence mechanism, and unknown signals. Snapshot signals such as lsregister dump paths, bundle identifiers, missing paths, Trash paths, mounted-volume paths, updater paths, active application paths, and `.csstore` candidate files are reported as observed evidence. Trace-backed signals such as SecurityPrivacyExtension `.csstore` reads, System Settings Privacy UI activity, and RunningBoard activity are observed only when a trace is supplied. Without a trace, those signals are explicitly reported as unknown rather than implied.
+
+The repository remains `macos-state-explorer`; WASP Prism is the future public project identity.
 
 ## Manual-review terminal state
 

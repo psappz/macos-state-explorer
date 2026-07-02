@@ -12,6 +12,7 @@ from macos_state_explorer.diagnostics.local_network.verification import LocalNet
 from macos_state_explorer.launchservices.analysis import LaunchServicesAnalysis, analysis_from_snapshot_payload, analysis_records_from_snapshot_payload
 from macos_state_explorer.launchservices.generations import analyze_generations
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, read_execute_plan_audit_history, render_launchservices_outcome, render_outcome_summary
+from macos_state_explorer.launchservices.producer_evidence import build_launchservices_producer_evidence, render_launchservices_producer_evidence, render_producer_evidence_summary
 from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, render_launchservices_provenance, render_provenance_summary
 from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
@@ -47,6 +48,8 @@ class LocalNetworkReport:
             payload["launchservices_outcome_summary"] = self.solution.launchservices_outcome_summary
         if self.solution.launchservices_provenance_summary is not None:
             payload["launchservices_provenance_summary"] = self.solution.launchservices_provenance_summary
+        if self.solution.launchservices_producer_evidence_summary is not None:
+            payload["launchservices_producer_evidence_summary"] = self.solution.launchservices_producer_evidence_summary
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -102,6 +105,8 @@ class LocalNetworkReport:
             lines.extend(["", render_outcome_summary(payload["launchservices_outcome_summary"])])
         if payload.get("launchservices_provenance_summary"):
             lines.extend(["", render_provenance_summary(payload["launchservices_provenance_summary"])])
+        if payload.get("launchservices_producer_evidence_summary"):
+            lines.extend(["", render_producer_evidence_summary(payload["launchservices_producer_evidence_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -185,6 +190,9 @@ def write_local_network_support_bundle(
     provenance = _report_provenance(report)
     (bundle / "provenance.json").write_text(json.dumps(provenance.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "provenance.txt").write_text(render_launchservices_provenance(provenance) + "\n")
+    producer_evidence = _report_producer_evidence(effective_report)
+    (bundle / "producer-evidence.json").write_text(json.dumps(producer_evidence.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "producer-evidence.txt").write_text(render_launchservices_producer_evidence(producer_evidence) + "\n")
     return bundle
 
 
@@ -198,6 +206,10 @@ def _report_provenance(report: LocalNetworkReport):
     payload = next((observation.payload for observation in report.snapshot.observations if observation.collector == "launchservices"), {})
     payload = payload if isinstance(payload, dict) else {}
     return build_launchservices_provenance(analyze_generations(analysis_records_from_snapshot_payload(payload)))
+
+
+def _report_producer_evidence(report: LocalNetworkReport):
+    return build_launchservices_producer_evidence(report.snapshot, trace_analysis=report.trace_analysis)
 
 
 def build_local_network_report(
