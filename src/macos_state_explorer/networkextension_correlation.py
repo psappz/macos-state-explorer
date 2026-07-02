@@ -29,6 +29,8 @@ class IdentityRecord:
     runningboard_identity: str | None = None
     security_privacy_extension: bool = False
     raw_reference: str | None = None
+    evidence_binding: str = "structurally_bound_identity"
+    binding_reason: str | None = None
 
     def identity_key(self) -> str:
         return "|".join(
@@ -39,6 +41,7 @@ class IdentityRecord:
                 self.team_id or "",
                 self.executable_path or "",
                 self.runningboard_identity or "",
+                self.evidence_binding,
                 self.source_path,
             ]
         )
@@ -55,6 +58,8 @@ class IdentityRecord:
             "runningboard_identity": self.runningboard_identity,
             "security_privacy_extension": self.security_privacy_extension,
             "raw_reference": self.raw_reference,
+            "evidence_binding": self.evidence_binding,
+            "binding_reason": self.binding_reason,
         }
 
 
@@ -118,6 +123,9 @@ class NetworkExtensionCorrelation:
             "conflicting_identity": sum(item.relationship == "conflicting_identity" for item in self.generation_correlations),
             "no_observable_relationship": sum(item.relationship == "no_observable_relationship" for item in self.generation_correlations),
             "unknown": sum(item.relationship == "unknown" for item in self.generation_correlations),
+            "structurally_bound_identity": sum(item.evidence_binding == "structurally_bound_identity" for item in self.identity_records),
+            "raw_text_reference_only": sum(item.evidence_binding == "raw_text_reference_only" for item in self.identity_records),
+            "ambiguous_preference_reference": sum(item.evidence_binding == "ambiguous_preference_reference" for item in self.identity_records),
             "read_only": True,
             "mutation_performed": False,
         }
@@ -198,6 +206,9 @@ def render_networkextension_correlation(correlation: NetworkExtensionCorrelation
         f"- probable_identical: {summary['probable_identical']}",
         f"- conflicting_identity: {summary['conflicting_identity']}",
         f"- no_observable_relationship: {summary['no_observable_relationship']}",
+        f"- structurally_bound_identity: {summary['structurally_bound_identity']}",
+        f"- raw_text_reference_only: {summary['raw_text_reference_only']}",
+        f"- ambiguous_preference_reference: {summary['ambiguous_preference_reference']}",
         "",
         "Generation correlations",
     ]
@@ -233,6 +244,7 @@ def networkextension_correlation_summary(correlation: NetworkExtensionCorrelatio
 def _correlate_generation(generation: Generation, ls_records: list[LaunchServicesRecord], identity_records: tuple[IdentityRecord, ...]) -> GenerationIdentityCorrelation:
     ls_identity = _generation_identity(generation, ls_records)
     candidates = _candidate_records(ls_identity, identity_records)
+    related_non_identity = _related_non_identity_records(ls_identity, identity_records)
     evidence: list[str] = []
     conflicts: list[str] = []
     for candidate in candidates:
@@ -254,7 +266,7 @@ def _correlate_generation(generation: Generation, ls_records: list[LaunchService
     else:
         relationship = "no_observable_relationship"
         conclusion_class = "Unknown"
-    missing = _missing_evidence(ls_identity, candidates, evidence)
+    missing = _missing_evidence(ls_identity, candidates, evidence, related_non_identity)
     return GenerationIdentityCorrelation(
         generation_id=generation.generation_id,
         bundle_identifier=generation.bundle_identifier,
@@ -286,6 +298,8 @@ def _generation_identity(generation: Generation, records: list[LaunchServicesRec
 def _candidate_records(ls_identity: dict[str, Any], records: tuple[IdentityRecord, ...]) -> list[IdentityRecord]:
     result = []
     for record in records:
+        if record.source != "trace" and record.evidence_binding != "structurally_bound_identity":
+            continue
         if ls_identity.get("application_uuid") and record.application_uuid == ls_identity.get("application_uuid"):
             result.append(record)
         elif ls_identity.get("bundle_id") and record.bundle_id == ls_identity.get("bundle_id"):
@@ -293,6 +307,22 @@ def _candidate_records(ls_identity: dict[str, Any], records: tuple[IdentityRecor
         elif ls_identity.get("team_id") and record.team_id == ls_identity.get("team_id") and ls_identity.get("executable_path") and record.executable_path == ls_identity.get("executable_path"):
             result.append(record)
     return sorted(result, key=lambda item: item.identity_key())
+
+
+def _related_non_identity_records(ls_identity: dict[str, Any], records: tuple[IdentityRecord, ...]) -> list[IdentityRecord]:
+    bundle_id = ls_identity.get("bundle_id")
+    if not bundle_id:
+        return []
+    return sorted(
+        [
+            record
+            for record in records
+            if record.source != "trace"
+            and record.evidence_binding != "structurally_bound_identity"
+            and record.bundle_id == bundle_id
+        ],
+        key=lambda item: item.identity_key(),
+    )
 
 
 def _compare_identity(ls_identity: dict[str, Any], candidate: IdentityRecord, evidence: list[str], conflicts: list[str]) -> None:
@@ -311,10 +341,14 @@ def _compare_field(field: str, label: str, left: object, right: object, evidence
         conflicts.append(f"{field}: LaunchServices={left} NetworkExtension={right}")
 
 
-def _missing_evidence(ls_identity: dict[str, Any], candidates: list[IdentityRecord], evidence: list[str]) -> list[str]:
+def _missing_evidence(ls_identity: dict[str, Any], candidates: list[IdentityRecord], evidence: list[str], related_non_identity: list[IdentityRecord]) -> list[str]:
     missing: list[str] = []
     if not candidates:
-        missing.append("NetworkExtension preference entry")
+        if any(record.evidence_binding == "raw_text_reference_only" for record in related_non_identity):
+            missing.append("raw text reference is not structurally bound to identity fields")
+        if any(record.evidence_binding == "ambiguous_preference_reference" for record in related_non_identity):
+            missing.append("ambiguous preference reference contains multiple bundle identifiers")
+        missing.append("NetworkExtension structurally bound identity entry")
     if not ls_identity.get("application_uuid") or not any(candidate.application_uuid for candidate in candidates):
         missing.append("application UUID")
     if not ls_identity.get("team_id") or not any(candidate.team_id for candidate in candidates):
@@ -382,40 +416,86 @@ def _decode_file(path: Path) -> str:
 def _records_from_text(text: str, path: Path, root: Path) -> list[IdentityRecord]:
     parsed = _parse_json(text)
     objects = _walk_objects(parsed) if parsed is not None else []
-    records = [_record_from_mapping(obj, path, root, text) for obj in objects if _looks_identity_mapping(obj)]
+    records: list[IdentityRecord] = []
+    for obj in objects:
+        records.extend(_record_from_mapping(obj, path, root, text))
     if records:
         return records
-    bundle_ids = sorted(set(BUNDLE_ID_RE.findall(text)))
-    uuids = sorted(set(UUID_RE.findall(text)))
-    team_ids = sorted(set(TEAM_ID_RE.findall(text)))
+    return _raw_reference_records(text, path, root)
+
+
+def _raw_reference_records(text: str, path: Path, root: Path) -> list[IdentityRecord]:
     result = []
-    for bundle_id in bundle_ids:
+    for bundle_id in sorted(set(BUNDLE_ID_RE.findall(text))):
         result.append(
             IdentityRecord(
                 source="NetworkExtension preference",
                 source_path=_display_path(path, root),
                 bundle_id=bundle_id,
-                application_uuid=uuids[0] if uuids else None,
-                team_id=team_ids[0] if team_ids else None,
                 security_privacy_extension="SecurityPrivacyExtension" in text,
                 raw_reference=_short_text(text),
+                evidence_binding="raw_text_reference_only",
+                binding_reason="bundle identifier appeared only in broad raw preference text; UUID, Team ID, and path were not structurally bound",
             )
         )
     return result
 
 
-def _record_from_mapping(obj: dict[str, Any], path: Path, root: Path, text: str) -> IdentityRecord:
-    return IdentityRecord(
-        source="NetworkExtension preference",
-        source_path=_display_path(path, root),
-        bundle_id=_first_string(obj, "bundle_id", "bundleIdentifier", "identifier"),
-        application_uuid=_first_string(obj, "application_uuid", "applicationUUID", "uuid", "ApplicationUUID"),
-        team_id=_first_string(obj, "team_id", "teamID", "TeamID"),
-        executable_path=_first_string(obj, "path", "executable_path", "executablePath"),
-        signing_identity=_first_string(obj, "signing_identity", "signingIdentity"),
-        security_privacy_extension="SecurityPrivacyExtension" in text,
-        raw_reference=_short_text(json.dumps(obj, sort_keys=True, default=str)),
+def _record_from_mapping(obj: dict[str, Any], path: Path, root: Path, text: str) -> list[IdentityRecord]:
+    direct_bundle = _first_string(obj, "bundle_id", "bundleIdentifier", "identifier")
+    bundle_values = _string_list(obj, "bundle_ids", "bundleIdentifiers", "identifiers")
+    object_bundle_ids = sorted(set(bundle_values or ([direct_bundle] if direct_bundle else [])))
+    identity_present = any(
+        _first_string(obj, key)
+        for key in [
+            "application_uuid",
+            "applicationUUID",
+            "uuid",
+            "ApplicationUUID",
+            "team_id",
+            "teamID",
+            "TeamID",
+            "path",
+            "executable_path",
+            "executablePath",
+        ]
     )
+    if direct_bundle and len(object_bundle_ids) == 1:
+        return [
+            IdentityRecord(
+                source="NetworkExtension preference",
+                source_path=_display_path(path, root),
+                bundle_id=direct_bundle,
+                application_uuid=_first_string(obj, "application_uuid", "applicationUUID", "uuid", "ApplicationUUID"),
+                team_id=_first_string(obj, "team_id", "teamID", "TeamID"),
+                executable_path=_first_string(obj, "path", "executable_path", "executablePath"),
+                signing_identity=_first_string(obj, "signing_identity", "signingIdentity"),
+                security_privacy_extension="SecurityPrivacyExtension" in text,
+                raw_reference=_short_text(json.dumps(obj, sort_keys=True, default=str)),
+                evidence_binding="structurally_bound_identity",
+                binding_reason="identity fields were present in the same structured object as exactly one bundle identifier",
+            )
+        ]
+    if object_bundle_ids:
+        binding = "ambiguous_preference_reference" if identity_present or len(object_bundle_ids) > 1 else "raw_text_reference_only"
+        reason = (
+            "structured object contains multiple bundle identifiers; UUID, Team ID, and path were not assigned to any one bundle"
+            if binding == "ambiguous_preference_reference"
+            else "bundle identifier appeared without structurally bound identity fields"
+        )
+        return [
+            IdentityRecord(
+                source="NetworkExtension preference",
+                source_path=_display_path(path, root),
+                bundle_id=bundle_id,
+                security_privacy_extension="SecurityPrivacyExtension" in text,
+                raw_reference=_short_text(json.dumps(obj, sort_keys=True, default=str)),
+                evidence_binding=binding,
+                binding_reason=reason,
+            )
+            for bundle_id in object_bundle_ids
+        ]
+    return []
 
 
 def _trace_identity_records(trace_analysis: dict[str, Any] | None) -> list[IdentityRecord]:
@@ -473,6 +553,16 @@ def _first_string(obj: dict[str, Any], *keys: str) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _string_list(obj: dict[str, Any], *keys: str) -> list[str]:
+    for key in keys:
+        value = obj.get(key)
+        if isinstance(value, list):
+            return sorted({item for item in value if isinstance(item, str) and item})
+        if isinstance(value, tuple):
+            return sorted({item for item in value if isinstance(item, str) and item})
+    return []
 
 
 def _display_path(path: Path, root: Path) -> str:

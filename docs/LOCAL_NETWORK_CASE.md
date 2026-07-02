@@ -93,6 +93,14 @@ The graph keeps evidence classes separate:
 - `Inferred`: not used for identity proof; filename-only matches are not sufficient.
 - `Unknown`: required evidence is missing or not readable.
 
+NetworkExtension preference evidence is additionally binding-aware:
+
+- `structurally_bound_identity`: one structured preference object binds exactly one bundle identifier to its UUID, Team ID, path, or signing fields.
+- `raw_text_reference_only`: a bundle identifier appears only in broad serialized text. It remains evidence that the string was present, but its neighboring UUID, Team ID, and path values are not assigned to that bundle.
+- `ambiguous_preference_reference`: a structured preference object contains multiple bundle identifiers or otherwise cannot safely bind one identity field set to one bundle.
+
+This PR 48 binding step reduces false identity graph nodes. It does not change diagnosis, repair, planner behavior, solver ranking, cleanup, or confidence. A Chrome generation may still report `no_observable_relationship`; the reason should now say whether only raw or ambiguous preference evidence was present.
+
 This correlation may identify shared UUIDs, reused bundle identifiers, shared Team IDs, shared executable paths, trace identity matches, and conflicting identity records. It still does not prove the true producer unless observable evidence connects a producer action to the stale registration. Missing producer evidence remains `Unknown`.
 
 Support bundles include `networkextension-correlation.json` and `networkextension-correlation.txt`, and bundle diffs include `NetworkExtension Correlation Diff`.

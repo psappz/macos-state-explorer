@@ -154,6 +154,9 @@ def test_networkextension_correlate_json_builds_deterministic_identity_graph(mon
         "conflicting_identity": 1,
         "no_observable_relationship": 1,
         "unknown": 0,
+        "structurally_bound_identity": 5,
+        "raw_text_reference_only": 0,
+        "ambiguous_preference_reference": 0,
         "read_only": True,
         "mutation_performed": False,
     }
@@ -175,7 +178,7 @@ def test_networkextension_correlate_json_builds_deterministic_identity_graph(mon
     assert by_bundle["com.google.Chrome.Dev"]["relationship"] == "probable_identical"
     assert by_bundle["com.google.Chrome.Canary"]["relationship"] == "no_observable_relationship"
     assert by_bundle["com.google.Chrome.Canary"]["missing_evidence"] == [
-        "NetworkExtension preference entry",
+        "NetworkExtension structurally bound identity entry",
         "application UUID",
         "Team ID",
         "trace identity",
@@ -263,6 +266,113 @@ def test_bundle_diff_includes_networkextension_correlation_diff(tmp_path):
         "added_generations": [],
         "removed_generations": [],
     }
+
+
+def test_networkextension_raw_blob_references_do_not_inherit_unbound_uuid_or_team(monkeypatch, tmp_path):
+    root = tmp_path / "ne"
+    prefs = root / "Library" / "Preferences"
+    prefs.mkdir(parents=True)
+    shared_uuid = "99999999-9999-9999-9999-999999999999"
+    (prefs / "com.apple.networkextension.localnetwork.json").write_text(
+        json.dumps(
+            {
+                "serialized_blob": " ".join(
+                    [
+                        "NetworkExtension cached text SecurityPrivacyExtension",
+                        "com.google.Chrome",
+                        "com.google.Chrome.code_sign_clone",
+                        "com.apple.Safari",
+                        "com.microsoft.Edge",
+                        "com.unrelated.Foo",
+                        shared_uuid,
+                        "EQHXZ8M8AV",
+                    ]
+                )
+            },
+            sort_keys=True,
+        )
+    )
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=True: snapshot_with_launchservices())
+
+    result = CliRunner().invoke(app, ["networkextension", "correlate", "--root", str(root), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    nodes = payload["identity_graph"]["nodes"]
+    raw_nodes = [node for node in nodes if node["evidence_binding"] == "raw_text_reference_only"]
+    assert {node["bundle_id"] for node in raw_nodes} >= {
+        "com.google.Chrome",
+        "com.google.Chrome.code_sign_clone",
+        "com.apple.Safari",
+        "com.microsoft.Edge",
+        "com.unrelated.Foo",
+    }
+    assert all(node["application_uuid"] is None for node in raw_nodes)
+    assert all(node["team_id"] is None for node in raw_nodes)
+    assert all(node["executable_path"] is None for node in raw_nodes)
+    assert payload["summary"]["raw_text_reference_only"] >= 5
+    by_bundle = {item["bundle_identifier"]: item for item in payload["generation_correlations"]}
+    assert by_bundle["com.google.Chrome"]["relationship"] == "no_observable_relationship"
+    assert "raw text reference is not structurally bound to identity fields" in by_bundle["com.google.Chrome"]["missing_evidence"]
+
+
+def test_networkextension_structurally_bound_and_ambiguous_references_are_separate(monkeypatch, tmp_path):
+    root = tmp_path / "ne"
+    prefs = root / "Library" / "Preferences"
+    prefs.mkdir(parents=True)
+    (prefs / "com.apple.networkextension.localnetwork.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "bundle_id": "com.google.Chrome",
+                        "application_uuid": UUID_CONFIRMED,
+                        "team_id": "EQHXZ8M8AV",
+                        "path": "/Applications/Google Chrome.app",
+                    },
+                    {
+                        "bundle_ids": ["com.google.Chrome.code_sign_clone", "com.google.Chrome"],
+                        "application_uuid": "77777777-7777-7777-7777-777777777777",
+                        "team_id": "EQHXZ8M8AV",
+                    },
+                ],
+                "raw_blob": "com.google.Chrome.code_sign_clone Chrome Helper SecurityPrivacyExtension",
+            },
+            sort_keys=True,
+        )
+    )
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=True: snapshot_with_launchservices())
+
+    result = CliRunner().invoke(app, ["networkextension", "correlate", "--root", str(root), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    nodes = payload["identity_graph"]["nodes"]
+    chrome_bound = [node for node in nodes if node["bundle_id"] == "com.google.Chrome" and node["evidence_binding"] == "structurally_bound_identity"]
+    assert chrome_bound
+    ambiguous = [node for node in nodes if node["evidence_binding"] == "ambiguous_preference_reference"]
+    assert ambiguous
+    assert all(node["application_uuid"] is None for node in ambiguous)
+    assert all(node["team_id"] is None for node in ambiguous)
+    assert payload["summary"]["structurally_bound_identity"] >= 1
+    assert payload["summary"]["ambiguous_preference_reference"] >= 1
+
+
+def test_networkextension_correlate_human_output_explains_unbound_chrome_references(monkeypatch, tmp_path):
+    root = tmp_path / "ne"
+    prefs = root / "Library" / "Preferences"
+    prefs.mkdir(parents=True)
+    (prefs / "com.apple.networkextension.localnetwork.json").write_text(
+        '{"blob":"com.google.Chrome com.google.Chrome.code_sign_clone Chrome Helper 99999999-9999-9999-9999-999999999999 EQHXZ8M8AV"}'
+    )
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=True: snapshot_with_launchservices())
+
+    result = CliRunner().invoke(app, ["networkextension", "correlate", "--root", str(root)])
+
+    assert result.exit_code == 0
+    assert "raw_text_reference_only" in result.stdout
+    assert "raw text reference is not structurally bound to identity fields" in result.stdout
+    assert "com.google.Chrome → no_observable_relationship" in result.stdout
 
 
 def test_networkextension_correlation_output_does_not_suggest_mutation(monkeypatch, tmp_path):
