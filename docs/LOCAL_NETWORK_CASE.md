@@ -177,4 +177,29 @@ Runtime absence is evidence, not permission to delete. Missing `/private/var/...
 
 Support bundles include `networkextension-candidate-validation.json` and `networkextension-candidate-validation.txt`, and bundle diffs include `NetworkExtension Candidate Validation Diff` for candidate refs, runtime status changes, runtime-absent deltas, stale-record deltas, and unverifiable-record deltas.
 
+## NetworkExtension repair plan preview
+
+`mse networkextension repair-plan-preview` is a strictly read-only preview layer on top of repair-candidate analysis and runtime validation. It groups validated stale candidate records so a future manual repair design can see what would be reviewed, but it does not execute, write, delete, reset, unload, reload, kill, reboot, or mutate anything.
+
+The preview groups stale records by:
+
+- plist artifact
+- parent object record
+- SigningIdentifier
+- executable path class
+- validation status
+
+Every group is marked `preview_only` and every report keeps `mutation_performed: false`. The only automatic execution recommendation is `never`.
+
+Group classifications are intentionally conservative:
+
+- `stale_code_sign_clone_preview_target`
+- `stale_missing_executable_preview_target`
+- `unsafe_without_manual_confirmation`
+- `never_auto_delete`
+
+The preview also records mandatory manual preconditions for any future human-reviewed repair: user-reviewed support bundle, backup of affected plist, Chrome not running, System Settings closed, post-change reboot required, and post-change verification required. It records automatic-execution blockers: NSKeyedArchiver mutation risk, object graph integrity risk, macOS private preference format, and runtime absence alone being insufficient.
+
+This command does not add deletion, plist writing, repair execution, solver behavior, planner behavior, diagnosis changes, ranking changes, confidence changes, or remediation behavior. Support bundles include `networkextension-repair-plan-preview.json` and `networkextension-repair-plan-preview.txt`, and bundle diffs include `NetworkExtension Repair Plan Preview Diff` for preview group additions/removals, classification changes, and preview target deltas.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.
