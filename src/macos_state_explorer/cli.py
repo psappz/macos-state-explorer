@@ -21,6 +21,7 @@ from macos_state_explorer.diagnostics.local_network.verification import render_v
 from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
 from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, analysis_records_from_snapshot_payload, render_launchservices_analysis
+from macos_state_explorer.launchservices.cleanup_checklist import build_launchservices_cleanup_checklist, render_launchservices_cleanup_checklist
 from macos_state_explorer.launchservices.generations import analyze_generations, render_generation_summary
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, read_execute_plan_audit_history, render_launchservices_outcome
 from macos_state_explorer.launchservices.producer_evidence import build_launchservices_producer_evidence, render_launchservices_producer_evidence
@@ -74,12 +75,20 @@ def launchservices(
     ctx: typer.Context,
     out: Path = typer.Argument(..., help="Output directory, or 'analyze' for root-cause analysis."),
 ):
-    if str(out) in {"analyze", "generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence", "regeneration"}:
+    if str(out) in {"analyze", "generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence", "regeneration", "cleanup-checklist"}:
         snap = create_snapshot(fast=True)
         payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
         payload = payload if isinstance(payload, dict) else {}
-        if str(out) in {"generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence", "regeneration"}:
+        if str(out) in {"generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence", "regeneration", "cleanup-checklist"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
+            if str(out) == "cleanup-checklist":
+                trace_path = _option_path(ctx.args, "--trace")
+                checklist = build_launchservices_cleanup_checklist(generations, trace_analysis=load_trace_analysis(trace_path))
+                if "--json" in ctx.args:
+                    typer.echo(json_module.dumps(checklist.to_json_dict(), sort_keys=False))
+                else:
+                    console.print(render_launchservices_cleanup_checklist(checklist), markup=False)
+                return
             if str(out) == "producer-evidence":
                 trace_path = _option_path(ctx.args, "--trace")
                 producer_evidence = build_launchservices_producer_evidence(snap, trace_analysis=load_trace_analysis(trace_path), trace_source=trace_path)
@@ -898,7 +907,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -919,6 +928,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "provenance_diff": _bundle_provenance_diff(before_report, after_report),
         "producer_evidence_diff": _bundle_producer_evidence_diff(before_report, after_report),
         "regeneration_diff": _bundle_regeneration_diff(before_report, after_report),
+        "cleanup_checklist_diff": _bundle_cleanup_checklist_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1037,6 +1047,27 @@ def _bundle_regeneration_diff(before_report: dict[str, Any], after_report: dict[
     }
 
 
+def _bundle_cleanup_checklist_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("launchservices_cleanup_checklist_summary")
+    after_value = after_report.get("launchservices_cleanup_checklist_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    before_ids = set(_sorted_string_list(before.get("item_ids")))
+    after_ids = set(_sorted_string_list(after.get("item_ids")))
+    common = before_ids & after_ids
+    before_items_value = before.get("items")
+    after_items_value = after.get("items")
+    before_items = before_items_value if isinstance(before_items_value, dict) else {}
+    after_items = after_items_value if isinstance(after_items_value, dict) else {}
+    changed = sorted(item_id for item_id in common if before_items.get(item_id) != after_items.get(item_id))
+    return {
+        "added_item_ids": sorted(after_ids - before_ids),
+        "removed_item_ids": sorted(before_ids - after_ids),
+        "changed_item_ids": changed,
+        "first_recommended_action_changed": before.get("first_recommended_manual_action") != after.get("first_recommended_manual_action"),
+    }
+
+
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("trace_correlation_summary")
     after_value = after_report.get("trace_correlation_summary")
@@ -1109,6 +1140,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     provenance = diff.get("provenance_diff", {})
     producer_evidence = diff.get("producer_evidence_diff", {})
     regeneration = diff.get("regeneration_diff", {})
+    cleanup_checklist = diff.get("cleanup_checklist_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1150,6 +1182,12 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Regenerator: {regeneration.get('regenerator_before', 'Unknown')} → {regeneration.get('regenerator_after', 'Unknown')}",
         f"- High confidence delta: {regeneration.get('high_confidence_delta', 0)}",
         f"- Unknown delta: {regeneration.get('unknown_delta', 0)}",
+        "",
+        "Cleanup Checklist Diff",
+        f"- Added items: {', '.join(cleanup_checklist.get('added_item_ids', [])) if cleanup_checklist.get('added_item_ids') else 'none'}",
+        f"- Removed items: {', '.join(cleanup_checklist.get('removed_item_ids', [])) if cleanup_checklist.get('removed_item_ids') else 'none'}",
+        f"- Changed items: {', '.join(cleanup_checklist.get('changed_item_ids', [])) if cleanup_checklist.get('changed_item_ids') else 'none'}",
+        f"- First recommended action changed: {cleanup_checklist.get('first_recommended_action_changed', False)}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",
