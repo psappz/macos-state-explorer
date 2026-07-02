@@ -245,7 +245,11 @@ def _skip_reason(generation: Generation, safety: RemediationSafety) -> str:
 
 
 def _step_for_generation(generation: Generation, index: int) -> LaunchServicesRemediationStep | None:
-    if generation.classification == GenerationClassification.STALE and generation.product_family in {"Google Chrome", "Microsoft Edge", "Chromium", "Brave", "Arc"}:
+    if _is_volume_generation(generation):
+        action = "plan_review_mounted_installer_generation"
+        safety = RemediationSafety.MANUAL_REVIEW_REQUIRED
+        reason = "Mounted or nonexistent installer volume registrations require manual review before cleanup."
+    elif generation.classification == GenerationClassification.STALE and generation.product_family in {"Google Chrome", "Microsoft Edge", "Chromium", "Brave", "Arc"}:
         action = "plan_unregister_obsolete_generation"
         safety = RemediationSafety.PLAN_ONLY_SAFE
         reason = "Obsolete helper/framework/app generation is superseded by an active generation."
@@ -292,6 +296,12 @@ def _generation_plan_dict(generation: Generation, safety: RemediationSafety, rea
         "safety": safety.value,
         "reason": reason,
     }
+
+
+def _is_volume_generation(generation: Generation) -> bool:
+    if (generation.installation_root or "").startswith("/Volumes/"):
+        return True
+    return any((registration.path or "").startswith("/Volumes/") for registration in generation.registrations)
 
 
 def _active_generation_json(active_by_product: dict[str, Generation]) -> dict[str, Any] | None:

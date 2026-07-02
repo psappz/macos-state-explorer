@@ -139,6 +139,41 @@ def snapshot(records: list[LaunchServicesRecord]) -> Snapshot:
     )
 
 
+def volume_regression_records() -> list[LaunchServicesRecord]:
+    return [
+        record(
+            "/Applications/Google Chrome.app",
+            bundle_id="com.google.Chrome",
+            name="Google Chrome",
+            version="149.0.7827.250",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+        record(
+            "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/148.0.7778.216/Helpers/Google Chrome Helper.app",
+            bundle_id="com.google.Chrome.helper",
+            name="Google Chrome Helper",
+            version="148.0.7778.216",
+        ),
+        record(
+            "/Volumes/Google Chrome/Google Chrome.app",
+            bundle_id="com.google.Chrome",
+            name="Google Chrome",
+            version="149.0.7827.201",
+            volume="/Volumes/Google Chrome",
+            volume_exists=False,
+        ),
+        record(
+            "/Volumes/Google Chrome/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/149.0.7827.201/Helpers/Google Chrome Helper.app",
+            bundle_id="com.google.Chrome.helper",
+            name="Google Chrome Helper",
+            version="149.0.7827.201",
+            volume="/Volumes/Google Chrome",
+            volume_exists=False,
+        ),
+    ]
+
+
 def test_product_detection_excludes_google_apps_and_ios_placeholders_from_chrome():
     analysis = analyze_generations(planning_records())
     families_by_name = {(generation.product_family, registration.name) for generation in analysis.generations for registration in generation.registrations}
@@ -183,6 +218,41 @@ def test_remediation_plan_never_selects_active_unknown_or_healthy_unrelated_entr
     assert all("YouTube" not in registration["name"] for step in plan.steps for registration in step.to_json_dict()["target_registrations"])
     assert skipped_by_id["google-chrome:149.0.7827.250:applications-google-chrome-app"]["safety"] == "BLOCKED_ACTIVE_GENERATION"
     assert any(item["safety"] == "BLOCKED_UNKNOWN" for item in skipped_by_id.values())
+
+
+def test_volume_generations_require_manual_review_even_when_classifier_marks_obsolete():
+    analysis = analyze_generations(volume_regression_records())
+    volume_generation = next(generation for generation in analysis.generations if (generation.installation_root or "").startswith("/Volumes/"))
+    plan = plan_launchservices_remediation(analysis)
+    steps_by_generation = {step.generation_id: step for step in plan.steps}
+
+    assert volume_generation.classification == GenerationClassification.STALE
+    assert steps_by_generation[volume_generation.generation_id].safety == RemediationSafety.MANUAL_REVIEW_REQUIRED
+    assert steps_by_generation[volume_generation.generation_id].action == "plan_review_mounted_installer_generation"
+    assert "volume" in steps_by_generation[volume_generation.generation_id].reason.lower()
+    assert "installer" in steps_by_generation[volume_generation.generation_id].reason.lower()
+
+
+def test_normal_obsolete_helper_remains_plan_only_safe_and_active_is_blocked():
+    plan = plan_launchservices_remediation(analyze_generations(volume_regression_records()))
+    steps_by_generation = {step.generation_id: step for step in plan.steps}
+    skipped_by_generation = {generation["generation_id"]: generation for generation in plan.to_json_dict()["skipped_generations"]}
+
+    assert steps_by_generation["google-chrome:148.0.7778.216:applications-google-chrome-app"].safety == RemediationSafety.PLAN_ONLY_SAFE
+    assert skipped_by_generation["google-chrome:149.0.7827.250:applications-google-chrome-app"]["safety"] == "BLOCKED_ACTIVE_GENERATION"
+
+
+def test_local_network_plan_summary_counts_nonexistent_volume_generation_as_manual_review(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(volume_regression_records()))
+    result = CliRunner().invoke(app, ["solve", "local-network", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert list(payload)[:6] == ["command", "diagnosis", "evidence", "matched_rules", "repair_candidates", "next_action"]
+    summary = payload["remediation_plan_summary"]
+    chrome_summary = next(item for item in summary["product_summaries"] if item["product_family"] == "Google Chrome")
+    assert chrome_summary["mounted_installer_generation_count"] == 1
+    assert summary["safety_summary"]["MANUAL_REVIEW_REQUIRED"] == 1
 
 
 def test_remediation_plan_json_schema_is_deterministic():
