@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from dataclasses import replace
-from typing import Any
+from typing import Any, Sequence
 
 from macos_state_explorer.core.model import Snapshot
 from macos_state_explorer.diagnostics.framework import (
@@ -28,7 +28,7 @@ def build_local_network_solution(
     snapshot: Snapshot,
     trace_analysis: dict[str, Any] | None = None,
     *,
-    launchservices_audit_log: Path | None = None,
+    launchservices_audit_log: Path | Sequence[Path] | None = None,
 ) -> LocalNetworkSolution:
     module = DiagnosticModule(
         id=LOCAL_NETWORK_MODULE.id,
@@ -66,7 +66,7 @@ def _launchservices_remediation_summary(snapshot: Snapshot) -> dict[str, Any]:
     return remediation_plan_summary(plan)
 
 
-def _launchservices_outcome_summary(snapshot: Snapshot, audit_log: Path | None = None) -> dict[str, Any]:
+def _launchservices_outcome_summary(snapshot: Snapshot, audit_log: Path | Sequence[Path] | None = None) -> dict[str, Any]:
     payload = next((observation.payload for observation in snapshot.observations if observation.collector == "launchservices"), {})
     payload = payload if isinstance(payload, dict) else {}
     records = analysis_records_from_snapshot_payload(payload)

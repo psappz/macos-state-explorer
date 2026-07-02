@@ -4,7 +4,7 @@ import platform
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from macos_state_explorer.core.model import Snapshot
 from macos_state_explorer.diagnostics.framework import build_support_bundle
@@ -23,7 +23,7 @@ class LocalNetworkReport:
     verification: LocalNetworkVerification
     trace_analysis: dict[str, Any] | None = None
     launchservices_analysis: LaunchServicesAnalysis | None = None
-    launchservices_audit_log: Path | None = None
+    launchservices_audit_log: Path | Sequence[Path] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         solution_json = self.solution.to_json_dict()
@@ -142,7 +142,7 @@ def write_local_network_support_bundle(
     *,
     branch_id: str,
     trace_path: Path | None = None,
-    launchservices_audit_log: Path | None = None,
+    launchservices_audit_log: Path | Sequence[Path] | None = None,
 ) -> Path:
     bundle = build_support_bundle(
         bundle_path,
@@ -168,7 +168,7 @@ def write_local_network_support_bundle(
     return bundle
 
 
-def _report_outcome(report: LocalNetworkReport, audit_log: Path | None = None):
+def _report_outcome(report: LocalNetworkReport, audit_log: Path | Sequence[Path] | None = None):
     payload = next((observation.payload for observation in report.snapshot.observations if observation.collector == "launchservices"), {})
     payload = payload if isinstance(payload, dict) else {}
     return build_launchservices_outcome(analyze_generations(analysis_records_from_snapshot_payload(payload)), audit_history=read_execute_plan_audit_history(audit_log))
@@ -179,7 +179,7 @@ def build_local_network_report(
     *,
     trace_analysis: dict[str, Any] | None = None,
     branch_id: str = "manual-empty-trash-reboot",
-    launchservices_audit_log: Path | None = None,
+    launchservices_audit_log: Path | Sequence[Path] | None = None,
 ) -> LocalNetworkReport:
     solution = build_local_network_solution(snapshot, trace_analysis=trace_analysis, launchservices_audit_log=launchservices_audit_log)
     verification = verify_local_network(snapshot, expected_branch_id=branch_id, trace_analysis=trace_analysis)
@@ -236,10 +236,17 @@ def _environment_summary() -> dict[str, Any]:
     }
 
 
-def _trace_metadata(trace_path: Path | None) -> dict[str, Any]:
+def _trace_metadata(trace_path: Path | Sequence[Path] | None) -> dict[str, Any]:
     if trace_path is None:
         return {"provided": False}
-    expanded = trace_path.expanduser()
+    if isinstance(trace_path, Sequence) and not isinstance(trace_path, (str, bytes, Path)):
+        paths = [Path(item).expanduser() for item in trace_path]
+        return {
+            "provided": bool(paths),
+            "count": len(paths),
+            "kinds": ["directory" if path.is_dir() else "file" if path.is_file() else "missing" for path in paths],
+        }
+    expanded = Path(trace_path).expanduser()
     return {
         "provided": True,
         "kind": "directory" if expanded.is_dir() else "file" if expanded.is_file() else "missing",

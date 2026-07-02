@@ -6,7 +6,7 @@ from enum import StrEnum
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from macos_state_explorer.launchservices.generations import GenerationAnalysis
 from macos_state_explorer.launchservices.remediation_plan import RemediationSafety, plan_launchservices_remediation
@@ -32,6 +32,7 @@ class AutomaticRemediationStatus(StrEnum):
 class ExecutePlanAuditHistory:
     by_generation: dict[str, str]
     source: str | None = None
+    sources: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class LaunchServicesOutcome:
     local_network_status: dict[str, Any]
     automatic_remediation_complete: bool
     automatic_remediation_status: str
+    audit_history: dict[str, Any]
     next_manual_actions: list[str]
     confidence: float
     explanation: str
@@ -67,6 +69,7 @@ class LaunchServicesOutcome:
             "local_network_status": dict(self.local_network_status),
             "automatic_remediation_complete": self.automatic_remediation_complete,
             "automatic_remediation_status": self.automatic_remediation_status,
+            "audit_history": dict(self.audit_history),
             "next_manual_actions": list(self.next_manual_actions),
             "confidence": self.confidence,
             "explanation": self.explanation,
@@ -91,6 +94,8 @@ def build_launchservices_outcome(
     for step in plan.steps:
         state = GenerationOutcomeState.REMAINING_PLAN_SAFE if step.safety == RemediationSafety.PLAN_ONLY_SAFE else GenerationOutcomeState.MANUAL_REVIEW_REQUIRED
         history_state = _history_state_for_step(step.generation_id, step.safety, audit_history)
+        if state == GenerationOutcomeState.REMAINING_PLAN_SAFE and history_state == "attempted_removed":
+            history_state = "attempted_but_present_again"
         item = {
             "product_family": step.product_family,
             "generation_id": step.generation_id,
@@ -166,6 +171,7 @@ def build_launchservices_outcome(
         local_network_status=local_network_status,
         automatic_remediation_complete=automatic_complete,
         automatic_remediation_status=automatic_status,
+        audit_history=_audit_history_summary(audit_history),
         next_manual_actions=next_actions,
         confidence=0.9 if automatic_complete else 0.85,
         explanation=explanation,
@@ -181,6 +187,7 @@ def outcome_summary(outcome: LaunchServicesOutcome) -> dict[str, Any]:
         "blocked": len(outcome.blocked_generations) + len(outcome.active_generations),
         "automatic_remediation_complete": outcome.automatic_remediation_complete,
         "automatic_remediation_status": outcome.automatic_remediation_status,
+        "audit_informed": bool(outcome.audit_history.get("source_count")),
         "remaining_trash_generations": remaining_counts.get("plan_review_trash_generation", 0),
         "remaining_mounted_installer_generations": remaining_counts.get("plan_review_mounted_installer_generation", 0),
         "remaining_updater_generations": remaining_counts.get("plan_review_stale_updater_generation", 0),
@@ -246,37 +253,82 @@ def render_launchservices_outcome(outcome: LaunchServicesOutcome) -> str:
     return "\n".join(lines)
 
 
-def read_execute_plan_audit_history(path: Path | None) -> ExecutePlanAuditHistory | None:
+def read_execute_plan_audit_history(path: Path | Sequence[Path] | None) -> ExecutePlanAuditHistory | None:
     if path is None:
         return None
-    expanded = path.expanduser()
-    if not expanded.exists():
-        return ExecutePlanAuditHistory(by_generation={}, source=str(expanded))
+    paths = list(path) if isinstance(path, Sequence) and not isinstance(path, (str, bytes, Path)) else [path]
     by_generation: dict[str, str] = {}
-    for line in expanded.read_text().splitlines():
-        if not line.strip():
+    sources: list[str] = []
+    for raw_path in paths:
+        expanded = Path(raw_path).expanduser()
+        sources.append(str(expanded))
+        if not expanded.exists():
             continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict) or event.get("event") != "launchservices_execute_plan_run" or event.get("confirmed") is not True:
-            continue
-        status = str(event.get("final_verdict") or event.get("status") or "UNKNOWN")
-        generation_diff_value = event.get("generation_diff")
-        generation_diff = generation_diff_value if isinstance(generation_diff_value, dict) else {}
-        for generation_id in _audit_generation_ids(generation_diff.get("removed")):
-            by_generation[generation_id] = "attempted_removed"
-        no_change_state = "attempted_unknown" if status == "UNKNOWN" else "attempted_no_persistent_change"
-        for key in ("regenerated", "still_present", "persisted"):
-            for generation_id in _audit_generation_ids(generation_diff.get(key)):
-                by_generation[generation_id] = no_change_state
-        if status in {"NO_MUTATION", "MUTATED_BUT_REGENERATED", "MUTATION_FAILED"}:
-            for step in event.get("executed_steps", []):
-                if isinstance(step, dict) and isinstance(step.get("generation_id"), str):
-                    by_generation[step["generation_id"]] = "attempted_no_persistent_change"
-    return ExecutePlanAuditHistory(by_generation=by_generation, source=str(expanded))
+        for line in expanded.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("event") == "launchservices_execute_plan_generation":
+                _apply_generation_audit_event(by_generation, event)
+            elif event.get("event") == "launchservices_execute_plan_run" and event.get("confirmed") is True:
+                _apply_run_audit_event(by_generation, event)
+    return ExecutePlanAuditHistory(by_generation=by_generation, source=sources[0] if sources else None, sources=sources)
 
+
+def _apply_generation_audit_event(by_generation: dict[str, str], event: dict[str, Any]) -> None:
+    generation_id = event.get("generation_id")
+    if not isinstance(generation_id, str) or not generation_id:
+        return
+    errors = event.get("errors")
+    if isinstance(errors, list) and errors:
+        by_generation[generation_id] = "attempted_unknown"
+        return
+    verification_value = event.get("verification")
+    verification = verification_value if isinstance(verification_value, dict) else {}
+    if verification.get("generation_removed") is True:
+        by_generation[generation_id] = "attempted_removed"
+    elif verification.get("generation_removed") is False:
+        by_generation[generation_id] = "attempted_no_persistent_change"
+    else:
+        by_generation[generation_id] = _state_for_result(str(verification.get("result") or "UNKNOWN"))
+
+
+def _apply_run_audit_event(by_generation: dict[str, str], event: dict[str, Any]) -> None:
+    status = str(event.get("final_verdict") or event.get("status") or "UNKNOWN")
+    generation_diff_value = event.get("generation_diff")
+    generation_diff = generation_diff_value if isinstance(generation_diff_value, dict) else {}
+    for generation_id in _audit_generation_ids(generation_diff.get("removed")):
+        by_generation[generation_id] = "attempted_removed"
+    no_change_state = _state_for_result(status)
+    for key in ("regenerated", "still_present", "persisted"):
+        for generation_id in _audit_generation_ids(generation_diff.get(key)):
+            by_generation[generation_id] = no_change_state
+    if status in {"NO_MUTATION", "MUTATED_BUT_REGENERATED", "MUTATION_FAILED", "UNKNOWN"}:
+        for step in event.get("executed_steps", []):
+            if isinstance(step, dict) and isinstance(step.get("generation_id"), str):
+                by_generation[step["generation_id"]] = no_change_state
+
+
+def _state_for_result(result: str) -> str:
+    if result == "MUTATED_AND_REMOVED":
+        return "attempted_removed"
+    if result == "UNKNOWN":
+        return "attempted_unknown"
+    if result == "MUTATION_FAILED":
+        return "attempted_failed"
+    return "attempted_no_persistent_change"
+
+
+def _audit_history_summary(audit_history: ExecutePlanAuditHistory | None) -> dict[str, Any]:
+    if audit_history is None:
+        return {"source_count": 0, "sources": [], "generation_count": 0}
+    sources = list(audit_history.sources or ([audit_history.source] if audit_history.source else []))
+    return {"source_count": len(sources), "sources": sources, "generation_count": len(audit_history.by_generation)}
 
 def _history_state_for_step(generation_id: str, safety: RemediationSafety, audit_history: ExecutePlanAuditHistory | None) -> str:
     if safety == RemediationSafety.MANUAL_REVIEW_REQUIRED:
@@ -300,7 +352,7 @@ def _automatic_status(plan_safe: list[dict[str, Any]]) -> str:
     states = {str(item.get("history_state")) for item in plan_safe}
     if "eligible_not_attempted" in states:
         return AutomaticRemediationStatus.AVAILABLE.value
-    if "attempted_unknown" in states:
+    if states & {"attempted_unknown", "attempted_but_present_again", "attempted_failed"}:
         return AutomaticRemediationStatus.UNKNOWN.value
     if states <= {"attempted_removed"}:
         return AutomaticRemediationStatus.EXHAUSTED.value
@@ -313,7 +365,7 @@ def _automatic_explanation(status: str) -> str:
     if status == AutomaticRemediationStatus.AVAILABLE.value:
         return "Additional PLAN_ONLY_SAFE generations remain eligible_not_attempted; safe automatic execution remains available."
     if status == AutomaticRemediationStatus.UNKNOWN.value:
-        return "PLAN_ONLY_SAFE generations were attempted but persistent removal is unknown. Do not report them as simply eligible."
+        return "PLAN_ONLY_SAFE generations were attempted but persistent removal is unknown or the generation is present again. Do not report them as simply eligible."
     if status == AutomaticRemediationStatus.EXHAUSTED.value:
         return "Only manual-review generations remain or prior PLAN_ONLY_SAFE attempts produced no persistent change. No additional safe automatic execution exists."
     return "Automatic remediation is incomplete because outcome history is insufficient."

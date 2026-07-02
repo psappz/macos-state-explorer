@@ -26,9 +26,15 @@ The resulting `LaunchServicesOutcome` is deterministic: IDs and timestamps are s
 
 ## History-aware outcome
 
-`mse launchservices outcome --audit-log <jsonl>` incorporates confirmed `launchservices execute-plan` run-level audit records. Current PLAN_ONLY_SAFE generations are no longer reported as plainly eligible when history shows they were already attempted and did not persistently disappear. The outcome summary distinguishes `eligible_not_attempted`, `attempted_removed`, `attempted_no_persistent_change`, `attempted_unknown`, `manual_review_required`, and `blocked_active`, then reports automatic remediation as `AVAILABLE`, `EXHAUSTED`, `INCOMPLETE`, or `UNKNOWN`.
+`mse launchservices outcome --audit-log <jsonl>` incorporates confirmed `launchservices execute-plan` audit records. `--audit-log` may be repeated; JSONL records are aggregated in the provided order.
 
-Audit history is analysis input only; it never triggers mutation.
+The reader accepts current run-level `launchservices_execute_plan_run` records and legacy per-generation `launchservices_execute_plan_generation` records. Legacy generation records map `verification.generation_removed: true` to `attempted_removed`, `verification.generation_removed: false` to `attempted_no_persistent_change`, and records with errors to an unknown/failed attempted state.
+
+Current snapshot state wins over history: if a generation is present now but prior audit history says it was removed, the outcome reports `attempted_but_present_again` rather than `eligible_not_attempted`.
+
+Current PLAN_ONLY_SAFE generations are no longer reported as plainly eligible when history shows they were already attempted and did not persistently disappear. The outcome summary distinguishes `eligible_not_attempted`, `attempted_removed`, `attempted_no_persistent_change`, `attempted_unknown`, `attempted_but_present_again`, `manual_review_required`, and `blocked_active`, then reports automatic remediation as `AVAILABLE`, `EXHAUSTED`, `INCOMPLETE`, or `UNKNOWN`.
+
+Audit history is analysis input only; it never triggers mutation. Audit-informed outcome is propagated into Local Network summaries and support bundles when `--audit-log` is provided, including `mse report local-network --bundle --audit-log <jsonl>`.
 
 ## Manual-review terminal state
 
