@@ -310,18 +310,65 @@ def _generation_classification(
 
 
 def _detect_product(record: LaunchServicesRecord) -> tuple[str, str] | None:
-    text = " ".join(str(part or "") for part in [record.bundle_id, record.identifier, record.canonical_id, record.name, record.display_name, record.path, record.path_clean]).lower()
-    if "microsoft edge" in text or "edgemac" in text or "com.microsoft.edge" in text:
-        return ("Microsoft Edge", "Microsoft")
-    if "brave" in text or "com.brave.browser" in text:
-        return ("Brave", "Brave")
-    if "arc.app" in text or "arc helper" in text or "thebrowser" in text or "company.thebrowser.browser" in text:
-        return ("Arc", "The Browser Company")
-    if "chromium" in text or "org.chromium.chromium" in text:
-        return ("Chromium", "Chromium")
-    if "google chrome" in text or "com.google.chrome" in text or "googleupdater" in text or "google updater" in text:
+    bundle_id = (record.bundle_id or record.identifier or record.canonical_id or "").lower()
+    name = " ".join(str(part or "") for part in [record.name, record.display_name]).lower()
+    path = (record.path_clean or record.path or "").lower()
+    text = " ".join([bundle_id, name, path])
+
+    if _is_ios_placeholder(record):
+        return None
+    if "edgeupdater" in text or bundle_id.startswith("com.microsoft.edgeupdater"):
+        return ("EdgeUpdater", "Microsoft")
+    if "googleupdater" in text or bundle_id.startswith("com.google.googleupdater"):
+        return ("GoogleUpdater", "Google")
+    if _is_google_chrome_identity(bundle_id, name, path):
         return ("Google Chrome", "Google")
+    if _is_microsoft_edge_identity(bundle_id, name, path):
+        return ("Microsoft Edge", "Microsoft")
+    if bundle_id.startswith("com.brave.browser") or "/brave browser.app" in path or "brave browser" in name:
+        return ("Brave", "Brave")
+    if bundle_id.startswith("company.thebrowser.browser") or "/arc.app" in path or "arc helper" in name:
+        return ("Arc", "The Browser Company")
+    if bundle_id.startswith("org.chromium.chromium") or "/chromium.app" in path or name == "chromium":
+        return ("Chromium", "Chromium")
     return None
+
+
+def _is_google_chrome_identity(bundle_id: str, name: str, path: str) -> bool:
+    if bundle_id.startswith("com.google.chrome"):
+        return True
+    chrome_path_markers = (
+        "/google chrome.app",
+        "/google chrome framework.framework",
+        "/google chrome helper",
+    )
+    if any(marker in path for marker in chrome_path_markers):
+        return True
+    return name in {"google chrome", "google chrome helper", "google chrome framework"} or name.startswith("google chrome helper")
+
+
+def _is_microsoft_edge_identity(bundle_id: str, name: str, path: str) -> bool:
+    if bundle_id.startswith("com.microsoft.edgemac") or bundle_id.startswith("com.microsoft.edge.") or bundle_id == "com.microsoft.edge":
+        return True
+    edge_path_markers = (
+        "/microsoft edge.app",
+        "/microsoft edge framework.framework",
+        "/microsoft edge helper",
+    )
+    if any(marker in path for marker in edge_path_markers):
+        return True
+    return name in {"microsoft edge", "microsoft edge helper", "microsoft edge framework"} or name.startswith("microsoft edge helper")
+
+
+def _is_ios_placeholder(record: LaunchServicesRecord) -> bool:
+    platform = (record.platform or "").lower()
+    path = (record.path_clean or record.path or "").lower()
+    bundle_id = (record.bundle_id or record.identifier or record.canonical_id or "").lower()
+    if platform in {"ios", "iphoneos", "watchos", "tvos"}:
+        return True
+    if "coresimulator" in path or "iosplaceholder" in path or "/mobile applications/" in path:
+        return True
+    return bundle_id.startswith("com.google.ios.") or bundle_id.startswith("com.apple.mobile")
 
 
 def _detect_version(record: LaunchServicesRecord) -> str | None:
@@ -341,7 +388,9 @@ def _installation_root(record: LaunchServicesRecord, product_family: str) -> str
         return None
     app_name = {
         "Google Chrome": "Google Chrome.app",
+        "GoogleUpdater": "GoogleUpdater.app",
         "Microsoft Edge": "Microsoft Edge.app",
+        "EdgeUpdater": "EdgeUpdater.app",
         "Chromium": "Chromium.app",
         "Brave": "Brave Browser.app",
         "Arc": "Arc.app",
@@ -349,8 +398,6 @@ def _installation_root(record: LaunchServicesRecord, product_family: str) -> str
     marker = f"/{app_name}"
     if marker in path:
         return path[: path.index(marker) + len(marker)]
-    if _registration_role(record) == "updater" and product_family == "Google Chrome" and path.startswith("/Volumes/Google Chrome/"):
-        return "/Volumes/Google Chrome/Google Chrome.app"
     app_match = re.search(r"^(.+?\.app)(?:/|$)", path)
     if app_match:
         return app_match.group(1)

@@ -167,7 +167,9 @@ def test_generation_analyzer_groups_chrome_helpers_framework_updater_volume_and_
     assert len(by_id["google-chrome:148.0.7778.216:applications-google-chrome-app"].helper_registrations) == 2
     assert len(by_id["google-chrome:148.0.7778.216:applications-google-chrome-app"].framework_registrations) == 1
     assert by_id["google-chrome:149.0.7827.201:volumes-google-chrome-google-chrome-app"].classification == GenerationClassification.MOUNTED_INSTALLER
-    assert len(by_id["google-chrome:149.0.7827.201:volumes-google-chrome-google-chrome-app"].updater_registrations) == 1
+    updater_generations = [generation for generation in analysis.generations if generation.product_family == "GoogleUpdater"]
+    assert len(updater_generations) == 1
+    assert updater_generations[0].classification == GenerationClassification.MOUNTED_INSTALLER
     assert by_id["google-chrome:149.0.7827.201:users-patrick-trash-google-chrome-app"].classification == GenerationClassification.TRASH
     assert sorted(reg.generation_id for reg in analysis.registrations) == sorted([reg.generation_id for gen in analysis.generations for reg in gen.registrations])
 
@@ -246,7 +248,7 @@ def test_launchservices_analyze_json_adds_generation_summary_without_breaking_pr
     payload = json.loads(result.stdout)
     assert list(payload)[:4] == ["command", "entry_count", "groups", "entries"]
     assert payload["generation_summary"]["obsolete_generation_count"] == 2
-    assert payload["generation_summary"]["mounted_installer_generation_count"] == 1
+    assert payload["generation_summary"]["mounted_installer_generation_count"] == 2
     assert payload["generation_summary"]["trash_generation_count"] == 1
 
 

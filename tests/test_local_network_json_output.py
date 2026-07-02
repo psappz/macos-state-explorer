@@ -49,7 +49,8 @@ def test_solve_local_network_json_schema_and_order(monkeypatch):
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert list(payload) == ["command", "diagnosis", "evidence", "matched_rules", "repair_candidates", "next_action"]
+    assert list(payload)[:6] == ["command", "diagnosis", "evidence", "matched_rules", "repair_candidates", "next_action"]
+    assert "remediation_plan_summary" in payload
     assert payload["command"] == "solve local-network"
     assert [item["id"] for item in payload["evidence"]] == [
         "LN-E001",
