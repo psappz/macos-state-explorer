@@ -161,4 +161,20 @@ Insufficient evidence is explicit. Incomplete records are `not_actionable`. Inst
 
 Support bundles include `networkextension-repair-candidates.json` and `networkextension-repair-candidates.txt`, and bundle diffs include `NetworkExtension Repair Candidate Diff` for candidate object references, safety classifications, duplicate counts, orphaned counts, and code-sign-clone-only counts.
 
+## NetworkExtension candidate runtime validation
+
+`mse networkextension validate-candidates` is the next narrow read-only validation step for repair candidates. It takes the decoded client identity records from repair-candidate analysis and compares them with observable runtime evidence: filesystem path presence, parent app/container presence, installed app presence, code-sign-clone/temp-container path shape, LaunchServices entry matches, and a best-effort current process snapshot.
+
+For every candidate the command reports:
+
+- artifact, object reference, signing identifier, executable path, and parent-chain context
+- runtime status: `runtime_present`, `runtime_absent`, `active_installed_app`, `stale_code_sign_clone`, `stale_missing_executable`, `ambiguous`, or `unverifiable`
+- evidence booleans for executable, parent bundle, installed app, code-sign-clone path, temp-container path, LaunchServices generation match, and running process match when observable
+- actionability flags that remain `still_read_only`, `requires_manual_confirmation`, and `never_auto_delete`
+- deterministic explanation of why the status is evidence only
+
+Runtime absence is evidence, not permission to delete. Missing `/private/var/.../com.google.Chrome.code_sign_clone/...` paths and missing executable paths can support a stale or absent classification, but the command never recommends automatic deletion. It does not mutate, delete, reset, repair, rewrite plists, clear caches, restart services, change diagnosis, change solver ranking, change planner behavior, or change confidence.
+
+Support bundles include `networkextension-candidate-validation.json` and `networkextension-candidate-validation.txt`, and bundle diffs include `NetworkExtension Candidate Validation Diff` for candidate refs, runtime status changes, runtime-absent deltas, stale-record deltas, and unverifiable-record deltas.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.

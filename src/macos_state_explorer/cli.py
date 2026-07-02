@@ -34,6 +34,7 @@ from macos_state_explorer.launchservices.remediation_plan import (
     plan_launchservices_remediation,
     render_remediation_plan,
 )
+from macos_state_explorer.networkextension_candidate_validation import build_networkextension_candidate_validation, render_networkextension_candidate_validation
 from macos_state_explorer.networkextension_correlation import build_networkextension_correlation, render_networkextension_correlation
 from macos_state_explorer.networkextension_object_graph import build_networkextension_object_graph, render_networkextension_object_graph
 from macos_state_explorer.networkextension_raw_references import build_networkextension_raw_references, render_networkextension_raw_references
@@ -151,6 +152,22 @@ def networkextension_repair_candidates_command(
         typer.echo(json_module.dumps(candidates.to_json_dict(), sort_keys=False))
     else:
         console.print(render_networkextension_repair_candidates(candidates), markup=False)
+
+
+@networkextension_app.command("validate-candidates")
+def networkextension_validate_candidates_command(
+    root: list[Path] | None = typer.Option(None, "--root", help="Read-only NetworkExtension root or file to inspect; repeatable."),
+    json_output: bool = typer.Option(False, "--json", help="Emit deterministic JSON."),
+):
+    roots = root if root else default_networkextension_roots()
+    snap = create_snapshot(fast=True)
+    payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
+    payload = payload if isinstance(payload, dict) else {}
+    validation = build_networkextension_candidate_validation(roots, launchservices_entries=payload.get("entries", []))
+    if json_output:
+        typer.echo(json_module.dumps(validation.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_networkextension_candidate_validation(validation), markup=False)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -997,7 +1014,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "networkextension_object_graph_summary", "networkextension_repair_candidates_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "networkextension_object_graph_summary", "networkextension_repair_candidates_summary", "networkextension_candidate_validation_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -1025,6 +1042,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "networkextension_raw_references_diff": _bundle_networkextension_raw_references_diff(before_report, after_report),
         "networkextension_object_graph_diff": _bundle_networkextension_object_graph_diff(before_report, after_report),
         "networkextension_repair_candidate_diff": _bundle_networkextension_repair_candidate_diff(before_report, after_report),
+        "networkextension_candidate_validation_diff": _bundle_networkextension_candidate_validation_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1300,6 +1318,25 @@ def _bundle_networkextension_repair_candidate_diff(before_report: dict[str, Any]
     }
 
 
+def _bundle_networkextension_candidate_validation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("networkextension_candidate_validation_summary")
+    after_value = after_report.get("networkextension_candidate_validation_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    before_refs = set(_sorted_string_list(before.get("candidate_refs")))
+    after_refs = set(_sorted_string_list(after.get("candidate_refs")))
+    before_status = before.get("status_counts") if isinstance(before.get("status_counts"), dict) else {}
+    after_status = after.get("status_counts") if isinstance(after.get("status_counts"), dict) else {}
+    return {
+        "added_candidate_refs": sorted(after_refs - before_refs),
+        "removed_candidate_refs": sorted(before_refs - after_refs),
+        "changed_statuses": sorted(set(before_status) ^ set(after_status) | {key for key in set(before_status) & set(after_status) if before_status.get(key) != after_status.get(key)}),
+        "runtime_absent_records_delta": int(after.get("runtime_absent_records", 0)) - int(before.get("runtime_absent_records", 0)),
+        "stale_records_delta": int(after.get("stale_records", 0)) - int(before.get("stale_records", 0)),
+        "unverifiable_records_delta": int(after.get("unverifiable_records", 0)) - int(before.get("unverifiable_records", 0)),
+    }
+
+
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("trace_correlation_summary")
     after_value = after_report.get("trace_correlation_summary")
@@ -1379,6 +1416,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     networkextension_raw_references = diff.get("networkextension_raw_references_diff", {})
     networkextension_object_graph = diff.get("networkextension_object_graph_diff", {})
     networkextension_repair_candidates = diff.get("networkextension_repair_candidate_diff", {})
+    networkextension_candidate_validation = diff.get("networkextension_candidate_validation_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1476,6 +1514,14 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Duplicate records: {networkextension_repair_candidates.get('duplicate_records_delta', 0):+d}",
         f"- Orphaned records: {networkextension_repair_candidates.get('orphaned_records_delta', 0):+d}",
         f"- Code-sign-clone-only records: {networkextension_repair_candidates.get('code_sign_clone_only_records_delta', 0):+d}",
+        "",
+        "NetworkExtension Candidate Validation Diff",
+        f"- Added candidate refs: {', '.join(networkextension_candidate_validation.get('added_candidate_refs', [])) if networkextension_candidate_validation.get('added_candidate_refs') else 'none'}",
+        f"- Removed candidate refs: {', '.join(networkextension_candidate_validation.get('removed_candidate_refs', [])) if networkextension_candidate_validation.get('removed_candidate_refs') else 'none'}",
+        f"- Changed statuses: {', '.join(networkextension_candidate_validation.get('changed_statuses', [])) if networkextension_candidate_validation.get('changed_statuses') else 'none'}",
+        f"- Runtime absent records: {networkextension_candidate_validation.get('runtime_absent_records_delta', 0):+d}",
+        f"- Stale records: {networkextension_candidate_validation.get('stale_records_delta', 0):+d}",
+        f"- Unverifiable records: {networkextension_candidate_validation.get('unverifiable_records_delta', 0):+d}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",
