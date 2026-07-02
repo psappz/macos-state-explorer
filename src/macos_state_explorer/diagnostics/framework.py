@@ -504,6 +504,7 @@ class DiagnosticSolution:
     launchservices_outcome_summary: dict[str, Any] | None = None
     launchservices_provenance_summary: dict[str, Any] | None = None
     launchservices_producer_evidence_summary: dict[str, Any] | None = None
+    trace_correlation_summary: dict[str, Any] | None = None
 
     def render_text(self) -> str:
         primary = self.repair_plan[0]
@@ -537,6 +538,10 @@ class DiagnosticSolution:
             from macos_state_explorer.launchservices.producer_evidence import render_producer_evidence_summary
 
             lines.extend(["", render_producer_evidence_summary(self.launchservices_producer_evidence_summary)])
+        if self.trace_correlation_summary:
+            from macos_state_explorer.trace_correlation import render_trace_correlation_summary
+
+            lines.extend(["", render_trace_correlation_summary(self.trace_correlation_summary)])
 
         if self.rule_matches:
             lines.extend(["", "Rule explanation"])
@@ -599,6 +604,8 @@ class DiagnosticSolution:
             payload["launchservices_provenance_summary"] = self.launchservices_provenance_summary
         if self.launchservices_producer_evidence_summary is not None:
             payload["launchservices_producer_evidence_summary"] = self.launchservices_producer_evidence_summary
+        if self.trace_correlation_summary is not None:
+            payload["trace_correlation_summary"] = self.trace_correlation_summary
         return payload
 
 

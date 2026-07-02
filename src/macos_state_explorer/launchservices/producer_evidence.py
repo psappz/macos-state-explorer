@@ -118,6 +118,7 @@ def producer_evidence_summary(producer_evidence: LaunchServicesProducerEvidence)
         "trace_available": bool(producer_evidence.trace_context.get("available")),
         "observed": _observed_summary_lines(producer_evidence.evidence),
         "trace_observed": trace_observed if trace_observed else ["not available"],
+        "consumer_evidence": _consumer_evidence_summary_lines(producer_evidence.evidence),
         "inferred": _inferred_summary_lines(producer_evidence.evidence),
         "unknown": _unknown_summary_lines(producer_evidence.evidence),
         "evidence_types": dict(sorted(type_counts.items())),
@@ -132,6 +133,7 @@ def local_network_producer_evidence_summary(producer_evidence: LaunchServicesPro
     return {
         "observed": summary["observed"],
         "trace_observed": summary["trace_observed"],
+        "consumer_evidence": summary["consumer_evidence"],
         "inferred": summary["inferred"],
         "unknown": summary["unknown"],
         "observed_evidence_count": summary["observed_evidence_count"],
@@ -149,6 +151,9 @@ def render_producer_evidence_summary(summary: dict[str, Any]) -> str:
         lines.append(f"- {line}")
     lines.append("Trace observed:")
     for line in summary.get("trace_observed", []) or ["not available"]:
+        lines.append(f"- {line}")
+    lines.append("Consumer evidence:")
+    for line in summary.get("consumer_evidence", []) or ["none"]:
         lines.append(f"- {line}")
     lines.append("Inferred:")
     for line in summary.get("inferred", []) or ["none"]:
@@ -169,6 +174,9 @@ def render_launchservices_producer_evidence(producer_evidence: LaunchServicesPro
         lines.append(f"- {line}")
     lines.extend(["", "Trace observed"])
     for line in payload["summary"].get("trace_observed", []) or ["not available"]:
+        lines.append(f"- {line}")
+    lines.extend(["", "Consumer evidence"])
+    for line in payload["summary"].get("consumer_evidence", []) or ["none"]:
         lines.append(f"- {line}")
     lines.extend(["", "Inferred evidence"])
     for line in payload["summary"].get("inferred", []) or ["none"]:
@@ -236,16 +244,32 @@ def _trace_evidence(registration: GenerationRegistration, trace_analysis: dict[s
         ]
     signal_counts = trace_analysis.get("signal_counts", {}) if isinstance(trace_analysis, dict) else {}
     blob = str(trace_analysis).lower()
+    consumer_observed = _securityprivacy_csstore_consumer_observed(trace_analysis)
     return [
-        _trace_item(registration, trace_analysis, "security_privacy_trace_reads_csstore", _signal_count(signal_counts, "securityprivacyextension", blob) > 0 and _signal_count(signal_counts, "launchservices_csstore", blob) > 0, "SecurityPrivacyExtension and .csstore reads were observed in trace artifacts."),
+        _trace_item(
+            registration,
+            trace_analysis,
+            "security_privacy_trace_reads_csstore",
+            consumer_observed,
+            "SecurityPrivacyExtension and .csstore access were observed in the same trace window/process context; this is consumer evidence.",
+            observed_category="observed_consumer",
+        ),
         _trace_item(registration, trace_analysis, "system_settings_trace_observed", "system settings" in blob or "privacy" in blob, "System Settings / Privacy UI activity was observed in trace artifacts."),
         _trace_item(registration, trace_analysis, "runningboard_trace_observed", _signal_count(signal_counts, "runningboard", blob) > 0, "RunningBoard process/app lifecycle activity was observed in trace artifacts."),
     ]
 
 
-def _trace_item(registration: GenerationRegistration, trace_analysis: dict[str, Any], evidence_type: str, observed: bool, observed_reason: str) -> LaunchServicesProducerEvidenceItem:
+def _trace_item(
+    registration: GenerationRegistration,
+    trace_analysis: dict[str, Any],
+    evidence_type: str,
+    observed: bool,
+    observed_reason: str,
+    *,
+    observed_category: str = "observed",
+) -> LaunchServicesProducerEvidenceItem:
     if observed:
-        return _item(registration, evidence_type, True, "trace", 0.86, f"Observed evidence: {observed_reason}", _raw_trace_reference(trace_analysis, evidence_type), "observed")
+        return _item(registration, evidence_type, True, "trace", 0.86, f"Observed evidence: {observed_reason}", _raw_trace_reference(trace_analysis, evidence_type), observed_category)
     return _item(registration, evidence_type, False, "trace", 0.2, "Unknown: trace was provided, but this signal was not observed.", _raw_trace_reference(trace_analysis, evidence_type), "unknown")
 
 
@@ -287,6 +311,32 @@ def _signal_count(signal_counts: Any, key: str, blob: str) -> int:
         if isinstance(value, int):
             return value
     return 1 if key.lower() in blob else 0
+
+
+def _securityprivacy_csstore_consumer_observed(trace_analysis: dict[str, Any]) -> bool:
+    events = trace_analysis.get("timeline_events", [])
+    if not isinstance(events, list):
+        return False
+    security_processes = {
+        str(event.get("process", "")).lower()
+        for event in events
+        if isinstance(event, dict)
+        and str(event.get("signal", "")).lower() == "securityprivacyextension"
+        and "securityprivacyextension" in str(event.get("process", "")).lower()
+    }
+    if not security_processes:
+        return False
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        process = str(event.get("process", "")).lower()
+        signal = str(event.get("signal", "")).lower()
+        line = str(event.get("line", "")).lower()
+        paths_value = event.get("paths", [])
+        paths = " ".join(str(path).lower() for path in paths_value if isinstance(path, str)) if isinstance(paths_value, list) else ""
+        if process in security_processes and (signal == "launchservices_csstore" or ".csstore" in line or ".csstore" in paths):
+            return True
+    return False
 
 
 def _raw_trace_reference(trace_analysis: dict[str, Any], evidence_type: str) -> dict[str, Any]:
@@ -337,10 +387,19 @@ def _inferred_summary_lines(items: Sequence[LaunchServicesProducerEvidenceItem])
     lines = set()
     if any(item.evidence_type in {"csstore_candidate_contains_path", "registration_path_missing"} and item.observed for item in items):
         lines.add("persistence likely derived from LaunchServices cache")
-    if any(item.evidence_type == "security_privacy_trace_reads_csstore" for item in items):
-        lines.add("SecurityPrivacyExtension likely consumes .csstore")
     if any(item.category == "inferred" for item in items):
         lines.add("Finder/Spotlight consumer evidence is modeled unless directly observed")
+    return sorted(lines)
+
+
+def _consumer_evidence_summary_lines(items: Sequence[LaunchServicesProducerEvidenceItem]) -> list[str]:
+    lines = set()
+    if any(item.evidence_type == "security_privacy_trace_reads_csstore" and item.observed and item.category == "observed_consumer" for item in items):
+        lines.add("SecurityPrivacyExtension .csstore consumer evidence observed")
+    if any(item.evidence_type == "system_settings_trace_observed" and item.observed for item in items):
+        lines.add("System Settings Privacy UI consumer context observed")
+    if any(item.evidence_type == "runningboard_trace_observed" and item.observed for item in items):
+        lines.add("RunningBoard process context observed")
     return sorted(lines)
 
 

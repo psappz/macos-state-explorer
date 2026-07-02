@@ -39,6 +39,7 @@ from macos_state_explorer.reports.local_network import build_local_network_repor
 from macos_state_explorer.solver.launchservices import build_launchservices_solution
 from macos_state_explorer.solver.local_network import build_local_network_solution, load_trace_analysis
 from macos_state_explorer.tracers.local_network import trace_json_payload, trace_local_network
+from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, render_trace_correlation_evidence
 
 app = typer.Typer(no_args_is_help=True)
 trace_app = typer.Typer(no_args_is_help=True)
@@ -661,6 +662,18 @@ def trace_local_network_cmd(
         trace_local_network(out.expanduser(), seconds=seconds)
 
 
+@trace_app.command("correlate")
+def trace_correlate_cmd(
+    trace: Path,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
+):
+    evidence = build_trace_correlation_evidence(load_trace_analysis(trace), trace_source=trace)
+    if json_output:
+        typer.echo(json_module.dumps(evidence.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_trace_correlation_evidence(evidence), markup=False)
+
+
 @experiment_app.command("local-network")
 def experiment_local_network_cmd(out: Path):
     experiment_local_network(out.expanduser())
@@ -860,7 +873,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "trace_correlation_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -880,6 +893,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "outcome_diff": _bundle_outcome_diff(before_report, after_report),
         "provenance_diff": _bundle_provenance_diff(before_report, after_report),
         "producer_evidence_diff": _bundle_producer_evidence_diff(before_report, after_report),
+        "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "changed_fields": changed_fields,
     }
 
@@ -983,6 +997,45 @@ def _bundle_producer_evidence_diff(before_report: dict[str, Any], after_report: 
     }
 
 
+def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("trace_correlation_summary")
+    after_value = after_report.get("trace_correlation_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    before_ids = _correlation_ids(before)
+    after_ids = _correlation_ids(after)
+    before_strength = _correlation_strength(before)
+    after_strength = _correlation_strength(after)
+    common = set(before_strength) & set(after_strength)
+    return {
+        "added_correlations": sorted(set(after_ids) - set(before_ids)),
+        "removed_correlations": sorted(set(before_ids) - set(after_ids)),
+        "changed_strength": sorted(key for key in common if before_strength.get(key) != after_strength.get(key)),
+    }
+
+
+def _correlation_ids(summary: dict[str, Any]) -> list[str]:
+    result = []
+    for item in summary.get("correlated", []):
+        if isinstance(item, dict):
+            producer = str(item.get("producer_process", ""))
+            consumer = str(item.get("consumer_process", ""))
+            if producer or consumer:
+                result.append(f"{producer}->{consumer}")
+    return sorted(result)
+
+
+def _correlation_strength(summary: dict[str, Any]) -> dict[str, str]:
+    result = {}
+    for item in summary.get("correlated", []):
+        if isinstance(item, dict):
+            producer = str(item.get("producer_process", ""))
+            consumer = str(item.get("consumer_process", ""))
+            key = f"{producer}->{consumer}"
+            result[key] = str(item.get("correlation_strength", ""))
+    return result
+
+
 def _sorted_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -996,6 +1049,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     outcome = diff.get("outcome_diff", {})
     provenance = diff.get("provenance_diff", {})
     producer_evidence = diff.get("producer_evidence_diff", {})
+    trace_correlation = diff.get("trace_correlation_diff", {})
     lines = [
         "Support bundle diff",
         f"Before: {diff['before']['path']}",
@@ -1030,6 +1084,11 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Removed evidence: {', '.join(producer_evidence.get('removed_evidence', [])) if producer_evidence.get('removed_evidence') else 'none'}",
         f"- Changed confidence: {', '.join(producer_evidence.get('changed_confidence', [])) if producer_evidence.get('changed_confidence') else 'none'}",
         f"- Changed observed status: {', '.join(producer_evidence.get('changed_observed_status', [])) if producer_evidence.get('changed_observed_status') else 'none'}",
+        "",
+        "Trace Correlation Diff",
+        f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",
+        f"- Removed correlations: {', '.join(trace_correlation.get('removed_correlations', [])) if trace_correlation.get('removed_correlations') else 'none'}",
+        f"- Changed strength: {', '.join(trace_correlation.get('changed_strength', [])) if trace_correlation.get('changed_strength') else 'none'}",
         "",
         "Changed fields",
         f"- {', '.join(diff['changed_fields']) if diff['changed_fields'] else 'none'}",
