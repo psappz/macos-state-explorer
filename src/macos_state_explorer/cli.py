@@ -23,6 +23,7 @@ from macos_state_explorer.experiments.local_network import experiment_local_netw
 from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, analysis_records_from_snapshot_payload, render_launchservices_analysis
 from macos_state_explorer.launchservices.generations import analyze_generations, render_generation_summary
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, read_execute_plan_audit_history, render_launchservices_outcome
+from macos_state_explorer.launchservices.producer_evidence import build_launchservices_producer_evidence, render_launchservices_producer_evidence
 from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, render_launchservices_provenance
 from macos_state_explorer.launchservices.remediation_plan import (
     LaunchServicesRemediationPlan,
@@ -71,12 +72,20 @@ def launchservices(
     ctx: typer.Context,
     out: Path = typer.Argument(..., help="Output directory, or 'analyze' for root-cause analysis."),
 ):
-    if str(out) in {"analyze", "generations", "plan", "execute-plan", "outcome", "provenance"}:
+    if str(out) in {"analyze", "generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence"}:
         snap = create_snapshot(fast=True)
         payload = next((observation.payload for observation in snap.observations if observation.collector == "launchservices"), {})
         payload = payload if isinstance(payload, dict) else {}
-        if str(out) in {"generations", "plan", "execute-plan", "outcome", "provenance"}:
+        if str(out) in {"generations", "plan", "execute-plan", "outcome", "provenance", "producer-evidence"}:
             generations = analyze_generations(analysis_records_from_snapshot_payload(payload))
+            if str(out) == "producer-evidence":
+                trace_path = _option_path(ctx.args, "--trace")
+                producer_evidence = build_launchservices_producer_evidence(snap, trace_analysis=load_trace_analysis(trace_path), trace_source=trace_path)
+                if "--json" in ctx.args:
+                    typer.echo(json_module.dumps(producer_evidence.to_json_dict(), sort_keys=False))
+                else:
+                    console.print(render_launchservices_producer_evidence(producer_evidence), markup=False)
+                return
             if str(out) == "provenance":
                 provenance = build_launchservices_provenance(generations)
                 if "--json" in ctx.args:
@@ -851,7 +860,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -870,6 +879,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "generation_diff": _bundle_generation_diff(before_report, after_report),
         "outcome_diff": _bundle_outcome_diff(before_report, after_report),
         "provenance_diff": _bundle_provenance_diff(before_report, after_report),
+        "producer_evidence_diff": _bundle_producer_evidence_diff(before_report, after_report),
         "changed_fields": changed_fields,
     }
 
@@ -952,6 +962,27 @@ def _bundle_provenance_diff(before_report: dict[str, Any], after_report: dict[st
     }
 
 
+def _bundle_producer_evidence_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("launchservices_producer_evidence_summary")
+    after_value = after_report.get("launchservices_producer_evidence_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    before_ids = set(_sorted_string_list(before.get("observed_evidence_ids")))
+    after_ids = set(_sorted_string_list(after.get("observed_evidence_ids")))
+    before_conf = before.get("evidence_confidence") if isinstance(before.get("evidence_confidence"), dict) else {}
+    after_conf = after.get("evidence_confidence") if isinstance(after.get("evidence_confidence"), dict) else {}
+    before_status = before.get("observed_status") if isinstance(before.get("observed_status"), dict) else {}
+    after_status = after.get("observed_status") if isinstance(after.get("observed_status"), dict) else {}
+    common_conf = set(before_conf) & set(after_conf)
+    common_status = set(before_status) & set(after_status)
+    return {
+        "added_evidence": sorted(after_ids - before_ids),
+        "removed_evidence": sorted(before_ids - after_ids),
+        "changed_confidence": sorted(key for key in common_conf if before_conf.get(key) != after_conf.get(key)),
+        "changed_observed_status": sorted(key for key in common_status if before_status.get(key) != after_status.get(key)),
+    }
+
+
 def _sorted_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -964,6 +995,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     generation = diff.get("generation_diff", {})
     outcome = diff.get("outcome_diff", {})
     provenance = diff.get("provenance_diff", {})
+    producer_evidence = diff.get("producer_evidence_diff", {})
     lines = [
         "Support bundle diff",
         f"Before: {diff['before']['path']}",
@@ -992,6 +1024,12 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Persistence: {provenance.get('persistence_before', 'unknown')} → {provenance.get('persistence_after', 'unknown')}",
         f"- Added consumers: {', '.join(provenance.get('added_consumers', [])) if provenance.get('added_consumers') else 'none'}",
         f"- Removed consumers: {', '.join(provenance.get('removed_consumers', [])) if provenance.get('removed_consumers') else 'none'}",
+        "",
+        "Producer Evidence Diff",
+        f"- Added evidence: {', '.join(producer_evidence.get('added_evidence', [])) if producer_evidence.get('added_evidence') else 'none'}",
+        f"- Removed evidence: {', '.join(producer_evidence.get('removed_evidence', [])) if producer_evidence.get('removed_evidence') else 'none'}",
+        f"- Changed confidence: {', '.join(producer_evidence.get('changed_confidence', [])) if producer_evidence.get('changed_confidence') else 'none'}",
+        f"- Changed observed status: {', '.join(producer_evidence.get('changed_observed_status', [])) if producer_evidence.get('changed_observed_status') else 'none'}",
         "",
         "Changed fields",
         f"- {', '.join(diff['changed_fields']) if diff['changed_fields'] else 'none'}",

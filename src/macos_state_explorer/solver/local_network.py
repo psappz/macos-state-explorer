@@ -18,6 +18,7 @@ from macos_state_explorer.diagnostics.local_network.module import LOCAL_NETWORK_
 from macos_state_explorer.launchservices.analysis import analysis_records_from_snapshot_payload
 from macos_state_explorer.launchservices.generations import analyze_generations
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, outcome_summary, read_execute_plan_audit_history
+from macos_state_explorer.launchservices.producer_evidence import build_launchservices_producer_evidence, local_network_producer_evidence_summary
 from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, local_network_provenance_summary
 from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation, remediation_plan_summary
 
@@ -48,6 +49,7 @@ def build_local_network_solution(
         remediation_plan_summary=_launchservices_remediation_summary(snapshot),
         launchservices_outcome_summary=_launchservices_outcome_summary(snapshot, launchservices_audit_log),
         launchservices_provenance_summary=_launchservices_provenance_summary(snapshot),
+        launchservices_producer_evidence_summary=_launchservices_producer_evidence_summary(snapshot, trace_analysis),
     )
 
 
@@ -82,6 +84,11 @@ def _launchservices_provenance_summary(snapshot: Snapshot) -> dict[str, Any]:
     records = analysis_records_from_snapshot_payload(payload)
     provenance = build_launchservices_provenance(analyze_generations(records))
     return local_network_provenance_summary(provenance)
+
+
+def _launchservices_producer_evidence_summary(snapshot: Snapshot, trace_analysis: dict[str, Any] | None = None) -> dict[str, Any]:
+    producer_evidence = build_launchservices_producer_evidence(snapshot, trace_analysis=trace_analysis)
+    return local_network_producer_evidence_summary(producer_evidence)
 
 
 def load_trace_analysis(path: Path | None) -> dict[str, Any] | None:

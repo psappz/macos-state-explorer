@@ -19,6 +19,8 @@ Priority 1 is the Chrome Local Network issue:
 
 The current macOS/LaunchServices implementation is the public reference engine and reference case for WASP Prism. No new Diagnostic Engines should be added until the Chrome Local Network reference case is fully solved.
 
+Phase 2 is investigation-driven: modeled provenance must be kept separate from observed producer evidence, observed consumer evidence, inferred persistence mechanism, and unknown signals. The Chrome Local Network reference case remains the highest priority.
+
 ## Install
 
 ```bash
