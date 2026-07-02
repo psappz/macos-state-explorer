@@ -283,6 +283,8 @@ def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_p
     assert _relative_files(bundle_dir) == [
         "cleanup-checklist.json",
         "cleanup-checklist.txt",
+        "cleanup-verification.json",
+        "cleanup-verification.txt",
         "command.json",
         "environment.json",
         "launchservices-analysis.json",
@@ -424,6 +426,8 @@ def test_report_bundle_without_trace_records_no_trace_artifacts(monkeypatch, tmp
     assert _relative_files(bundle_dir) == [
         "cleanup-checklist.json",
         "cleanup-checklist.txt",
+        "cleanup-verification.json",
+        "cleanup-verification.txt",
         "command.json",
         "environment.json",
         "launchservices-analysis.json",
