@@ -32,7 +32,8 @@ STAGE_ORDER = (
     "repair_candidates_command_against_repaired_plist",
     "validate_candidates_command_against_repaired_plist",
     "repair_candidates_zero",
-    "compare_repaired_with_generated_artifact",
+    "validation_candidates_zero",
+    "semantic_equivalence_with_generated_artifact",
     "validation_summary_generated",
 )
 
@@ -65,6 +66,7 @@ class NetworkExtensionApplyValidation:
     stages: tuple[ValidationStage, ...]
     statistics: dict[str, Any]
     hash_comparison: dict[str, Any]
+    semantic_comparison: dict[str, Any]
     overall_verdict: str
     failure: dict[str, Any] | None
 
@@ -82,6 +84,7 @@ class NetworkExtensionApplyValidation:
             "statistics": self.statistics,
             "hash_comparison": self.hash_comparison,
             "failure": self.failure,
+            "semantic_comparison": self.semantic_comparison,
         }
 
     def summary(self) -> dict[str, Any]:
@@ -101,6 +104,14 @@ class NetworkExtensionApplyValidation:
             "target_sha256": str(self.hash_comparison.get("target_sha256", "")),
             "artifact_sha256": str(self.hash_comparison.get("artifact_sha256", "")),
             "sha256_identical": bool(self.hash_comparison.get("sha256_identical", False)),
+            "bytewise_sha256_identical": bool(self.semantic_comparison.get("bytewise_sha256_identical", False)),
+            "semantic_equivalence": bool(self.semantic_comparison.get("semantic_equivalence", False)),
+            "object_graph_equivalent": bool(self.semantic_comparison.get("object_graph_equivalent", False)),
+            "uid_reference_graph_equivalent": bool(self.semantic_comparison.get("uid_reference_graph_equivalent", False)),
+            "dictionary_bindings_equivalent": bool(self.semantic_comparison.get("dictionary_bindings_equivalent", False)),
+            "repair_candidates_equivalent": bool(self.semantic_comparison.get("repair_candidates_equivalent", False)),
+            "validation_candidates_equivalent": bool(self.semantic_comparison.get("validation_candidates_equivalent", False)),
+            "serialization_difference_explained": str(self.semantic_comparison.get("serialization_difference_explained", "not_compared")),
             "serialization_identical": bool(self.hash_comparison.get("serialization_identical", False)),
             "object_graph_identical": bool(self.hash_comparison.get("object_graph_identical", False)),
             "read_only": True,
@@ -126,6 +137,7 @@ def validate_networkextension_apply(
         "serialization_identical": False,
         "object_graph_identical": False,
     }
+    semantic_comparison: dict[str, Any] = _empty_semantic_comparison()
     failure: dict[str, Any] | None = None
 
     def add(name: str, status: str, reason: str, expected: Any = None, observed: Any = None) -> None:
@@ -195,8 +207,15 @@ def validate_networkextension_apply(
     add("repair_candidates_command_against_repaired_plist", "PASS", "repair-candidates analysis completed against repaired plist", "completed", "completed")
     add("validate_candidates_command_against_repaired_plist", "PASS", "validate-candidates analysis completed against repaired plist", "completed", "completed")
     add("repair_candidates_zero", "PASS" if stats["repair_candidates_remaining"] == 0 else "FAIL", "no repair candidates remain" if stats["repair_candidates_remaining"] == 0 else "repair candidates remain", 0, stats["repair_candidates_remaining"])
+    add("validation_candidates_zero", "PASS" if stats["validation_candidates_remaining"] == 0 else "FAIL", "no validation candidates remain" if stats["validation_candidates_remaining"] == 0 else "validation candidates remain", 0, stats["validation_candidates_remaining"])
 
     artifact_data = artifact.read_bytes() if artifact.is_file() else b""
+    artifact_value: Any = None
+    if artifact_data:
+        try:
+            artifact_value = plistlib.loads(artifact_data)
+        except Exception:
+            artifact_value = None
     target_sha = hashlib.sha256(target_data).hexdigest() if target_data else ""
     artifact_sha = hashlib.sha256(artifact_data).hexdigest() if artifact_data else ""
     graph_identical = False
@@ -204,7 +223,7 @@ def validate_networkextension_apply(
     if artifact_data and target_data:
         serialization_identical = target_data == artifact_data
         try:
-            graph_identical = plistlib.loads(target_data) == plistlib.loads(artifact_data)
+            graph_identical = plistlib.loads(target_data) == artifact_value
         except Exception:
             graph_identical = False
     sha_identical = bool(target_sha and artifact_sha and target_sha == artifact_sha)
@@ -217,11 +236,40 @@ def validate_networkextension_apply(
             "object_graph_identical": graph_identical,
         }
     )
-    compare_ok = sha_identical and serialization_identical and graph_identical
-    add("compare_repaired_with_generated_artifact", "PASS" if compare_ok else "FAIL", "target matches generated repair artifact exactly" if compare_ok else "target differs from generated repair artifact", "identical", "identical" if compare_ok else "different")
+    artifact_candidates = build_networkextension_repair_candidates([artifact]) if artifact.is_file() else None
+    artifact_validation = build_networkextension_candidate_validation([artifact], process_rows=[]) if artifact.is_file() else None
+    semantic_comparison = _semantic_comparison(
+        target_value,
+        artifact_value,
+        bytewise_sha256_identical=sha_identical,
+        serialization_identical=serialization_identical,
+        target_repair_candidates_remaining=stats["repair_candidates_remaining"],
+        target_validation_candidates_remaining=stats["validation_candidates_remaining"],
+        target_candidate_rows=candidate_rows,
+        target_validation_rows=validation_rows,
+        artifact_candidate_rows=_candidate_rows(artifact_candidates),
+        artifact_validation_rows=_validation_rows(artifact_validation),
+    )
+    compare_ok = bool(semantic_comparison["semantic_equivalence"])
+    add(
+        "semantic_equivalence_with_generated_artifact",
+        "PASS" if compare_ok else "FAIL",
+        "target is semantically equivalent to generated repair artifact" if compare_ok else "target differs semantically from generated repair artifact",
+        "semantically equivalent",
+        "semantically equivalent" if compare_ok else "different semantics",
+    )
     add("validation_summary_generated", "PASS", "validation summary generated", "generated", "generated")
 
-    if any(stage.status == "FAIL" for stage in stages):
+    core_success = (
+        stats["archive_integrity"] == "PASSED"
+        and stats["graph_consistency"] == "PASSED"
+        and stats["repair_candidates_remaining"] == 0
+        and stats["validation_candidates_remaining"] == 0
+        and bool(semantic_comparison["semantic_equivalence"])
+    )
+    if core_success and all(stage.status != "FAIL" for stage in stages):
+        verdict = "VALIDATION_PASSED"
+    elif any(stage.status == "FAIL" for stage in stages):
         verdict = "VALIDATION_FAILED"
     elif any(stage.status == "INCONCLUSIVE" for stage in stages):
         verdict = "VALIDATION_INCONCLUSIVE"
@@ -235,6 +283,7 @@ def validate_networkextension_apply(
         stages=tuple(stages),
         statistics=stats,
         hash_comparison=hash_comparison,
+        semantic_comparison=semantic_comparison,
         overall_verdict=verdict,
         failure=failure,
     )
@@ -244,6 +293,153 @@ def networkextension_apply_validation_summary(validation: NetworkExtensionApplyV
     return validation.summary()
 
 
+def _empty_semantic_comparison() -> dict[str, Any]:
+    return {
+        "bytewise_sha256_identical": False,
+        "semantic_equivalence": False,
+        "object_graph_equivalent": False,
+        "uid_reference_graph_equivalent": False,
+        "dictionary_bindings_equivalent": False,
+        "repair_candidates_equivalent": False,
+        "validation_candidates_equivalent": False,
+        "remaining_repair_candidates": 0,
+        "remaining_validation_candidates": 0,
+        "serialization_difference_explained": "not_compared",
+    }
+
+
+def _semantic_comparison(
+    target_value: Any,
+    artifact_value: Any,
+    *,
+    bytewise_sha256_identical: bool,
+    serialization_identical: bool,
+    target_repair_candidates_remaining: int,
+    target_validation_candidates_remaining: int,
+    target_candidate_rows: list[Any],
+    target_validation_rows: list[Any],
+    artifact_candidate_rows: list[Any],
+    artifact_validation_rows: list[Any],
+) -> dict[str, Any]:
+    object_graph_equivalent = target_value == artifact_value and target_value is not None
+    uid_reference_graph_equivalent = _uid_reference_edges(target_value) == _uid_reference_edges(artifact_value) and target_value is not None
+    dictionary_bindings_equivalent = _dictionary_bindings(target_value) == _dictionary_bindings(artifact_value) and target_value is not None
+    repair_candidates_equivalent = _semantic_candidate_rows(target_candidate_rows) == _semantic_candidate_rows(artifact_candidate_rows)
+    validation_candidates_equivalent = _semantic_validation_rows(target_validation_rows) == _semantic_validation_rows(artifact_validation_rows)
+    semantic_equivalence = all(
+        [
+            object_graph_equivalent,
+            uid_reference_graph_equivalent,
+            dictionary_bindings_equivalent,
+            repair_candidates_equivalent,
+            validation_candidates_equivalent,
+        ]
+    )
+    if bytewise_sha256_identical and serialization_identical:
+        explanation = "byte_identical"
+    elif semantic_equivalence:
+        explanation = "bytewise serialization differs, but decoded NSKeyedArchiver semantics are equivalent"
+    else:
+        explanation = "decoded NSKeyedArchiver semantics differ"
+    return {
+        "bytewise_sha256_identical": bytewise_sha256_identical,
+        "semantic_equivalence": semantic_equivalence,
+        "object_graph_equivalent": object_graph_equivalent,
+        "uid_reference_graph_equivalent": uid_reference_graph_equivalent,
+        "dictionary_bindings_equivalent": dictionary_bindings_equivalent,
+        "repair_candidates_equivalent": repair_candidates_equivalent,
+        "validation_candidates_equivalent": validation_candidates_equivalent,
+        "remaining_repair_candidates": target_repair_candidates_remaining,
+        "remaining_validation_candidates": target_validation_candidates_remaining,
+        "serialization_difference_explained": explanation,
+    }
+
+
+def _candidate_rows(result: Any) -> list[Any]:
+    if result is None:
+        return []
+    payload = result.to_json_dict()
+    rows = payload.get("candidates")
+    return rows if isinstance(rows, list) else []
+
+
+def _validation_rows(result: Any) -> list[Any]:
+    if result is None:
+        return []
+    payload = result.to_json_dict()
+    rows = payload.get("validations")
+    return rows if isinstance(rows, list) else []
+
+
+def _semantic_candidate_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    normalized = []
+    for row in rows:
+        if isinstance(row, dict):
+            normalized.append(
+                {
+                    "object_reference": row.get("object_reference"),
+                    "signing_identifier": row.get("signing_identifier"),
+                    "executable_path": row.get("executable_path"),
+                    "could_ever_be_safely_removed": row.get("could_ever_be_safely_removed"),
+                    "safety_classification": row.get("safety_classification"),
+                }
+            )
+    return sorted(normalized, key=lambda item: (str(item.get("object_reference")), str(item.get("signing_identifier")), str(item.get("executable_path"))))
+
+
+def _semantic_validation_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    normalized = []
+    for row in rows:
+        if isinstance(row, dict):
+            normalized.append(
+                {
+                    "object_ref": row.get("object_ref"),
+                    "signing_identifier": row.get("signing_identifier"),
+                    "executable_path": row.get("executable_path"),
+                    "candidate_status": row.get("candidate_status"),
+                }
+            )
+    return sorted(normalized, key=lambda item: (str(item.get("object_ref")), str(item.get("signing_identifier")), str(item.get("executable_path"))))
+
+
+def _uid_reference_edges(value: Any, path: str = "$") -> list[tuple[str, int]]:
+    if isinstance(value, plistlib.UID):
+        return [(path, value.data)]
+    edges: list[tuple[str, int]] = []
+    if isinstance(value, dict):
+        for key in sorted(value):
+            edges.extend(_uid_reference_edges(value[key], f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            edges.extend(_uid_reference_edges(item, f"{path}[{index}]"))
+    return edges
+
+
+def _dictionary_bindings(value: Any, path: str = "$") -> list[tuple[str, tuple[tuple[str, str], ...]]]:
+    bindings: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+    if isinstance(value, dict):
+        entries = tuple(sorted((str(key), _semantic_scalar(child)) for key, child in value.items()))
+        bindings.append((path, entries))
+        for key in sorted(value):
+            bindings.extend(_dictionary_bindings(value[key], f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            bindings.extend(_dictionary_bindings(item, f"{path}[{index}]"))
+    return bindings
+
+
+def _semantic_scalar(value: Any) -> str:
+    if isinstance(value, plistlib.UID):
+        return f"UID:{value.data}"
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return repr(value)
+    if isinstance(value, list):
+        return "LIST"
+    if isinstance(value, dict):
+        return "DICT"
+    return type(value).__name__
+
+
 def render_networkextension_apply_validation(validation: NetworkExtensionApplyValidation) -> str:
     summary = validation.summary()
     lines = [
@@ -251,6 +447,7 @@ def render_networkextension_apply_validation(validation: NetworkExtensionApplyVa
         "- Read-only: true",
         "- Mutation performed: false",
         f"- Overall verdict: {validation.overall_verdict}",
+        f"- Repair actually successful: {str(validation.overall_verdict == 'VALIDATION_PASSED').lower()}",
         f"- Target path: {validation.target_path}",
         f"- Artifact path: {validation.artifact_path}",
         f"- Object count: {summary['object_count']}",
@@ -258,7 +455,11 @@ def render_networkextension_apply_validation(validation: NetworkExtensionApplyVa
         f"- Validation candidates remaining: {summary['validation_candidates_remaining']}",
         f"- Graph consistency: {summary['graph_consistency']}",
         f"- Archive integrity: {summary['archive_integrity']}",
+        f"- Byte-identical: {str(summary['bytewise_sha256_identical']).lower()}",
+        f"- Semantically equivalent: {str(summary['semantic_equivalence']).lower()}",
         f"- SHA256 identical: {str(summary['sha256_identical']).lower()}",
+        f"- Serialization explanation: {summary['serialization_difference_explained']}",
+        "- SHA256 mismatch alone is not a failure when semantic validation passes.",
         "",
         "Validation stages",
     ]
@@ -283,10 +484,13 @@ def render_networkextension_apply_validation_summary(summary: dict[str, Any]) ->
         [
             "NetworkExtension apply validation",
             f"- Overall verdict: {summary.get('overall_verdict', 'VALIDATION_INCONCLUSIVE')}",
+            f"- Repair actually successful: {str(summary.get('overall_verdict') == 'VALIDATION_PASSED').lower()}",
             f"- Failed stage: {summary.get('failed_stage', '') or 'none'}",
             f"- Repair candidates remaining: {summary.get('repair_candidates_remaining', 0)}",
             f"- Validation candidates remaining: {summary.get('validation_candidates_remaining', 0)}",
             f"- Graph consistency: {summary.get('graph_consistency', 'UNKNOWN')}",
+            f"- Semantic equivalence: {str(summary.get('semantic_equivalence', False)).lower()}",
+            f"- Byte-identical: {str(summary.get('bytewise_sha256_identical', False)).lower()}",
             f"- SHA256 identical: {str(summary.get('sha256_identical', False)).lower()}",
         ]
     )
