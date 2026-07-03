@@ -202,4 +202,21 @@ The preview also records mandatory manual preconditions for any future human-rev
 
 This command does not add deletion, plist writing, repair execution, solver behavior, planner behavior, diagnosis changes, ranking changes, confidence changes, or remediation behavior. Support bundles include `networkextension-repair-plan-preview.json` and `networkextension-repair-plan-preview.txt`, and bundle diffs include `NetworkExtension Repair Plan Preview Diff` for preview group additions/removals, classification changes, and preview target deltas.
 
+## NetworkExtension repair transaction package
+
+`mse networkextension repair-transaction-package` is a strictly read-only transaction/package layer on top of validated repair-plan-preview groups. It describes exactly what a future manual or separately guarded repair would need to review, but it is not executable by this tool.
+
+For every preview group the package records:
+
+- source artifact path/name, artifact type, and SHA256 digest when the source artifact is readable
+- mandatory backup requirement and rollback requirement
+- affected parent object record such as `$objects[137]`
+- grouped preview target IDs and candidate object references
+- validation status, executable path class, and `SigningIdentifier`
+- manual preconditions and execution blockers inherited from the preview layer
+- post-change verification commands
+- explicit `read_only: true`, `mutation_performed: false`, `executable_by_tool: false`, and automatic execution recommendation `never`
+
+The transaction package does not edit plists, delete records, reset services, execute repair, change solver/planner/ranking/confidence behavior, or mutate the system. Support bundles include `networkextension-repair-transaction-package.json` and `networkextension-repair-transaction-package.txt`, and bundle diffs include `NetworkExtension Repair Transaction Package Diff` for transaction additions/removals, validation status changes, and backup/rollback deltas.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.
