@@ -44,6 +44,7 @@ from macos_state_explorer.networkextension_repair_transaction_package import bui
 from macos_state_explorer.networkextension_manual_repair_runbook import build_networkextension_manual_repair_runbook, render_networkextension_manual_repair_runbook
 from macos_state_explorer.networkextension_repair_simulation import build_networkextension_repair_simulation, render_networkextension_repair_simulation
 from macos_state_explorer.networkextension_repair_artifact import build_networkextension_repair_artifact, render_networkextension_repair_artifact
+from macos_state_explorer.networkextension_repair_apply import DEFAULT_ARTIFACT, DEFAULT_BACKUP_DIR, DEFAULT_METADATA, DEFAULT_TARGET, CONFIRMATION_STRING, apply_networkextension_repair_artifact, render_networkextension_repair_apply
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, render_networkextension_state
 from macos_state_explorer.remediation.rules import build_remediation_plan
 from macos_state_explorer.reports.html import write_report
@@ -272,6 +273,30 @@ def networkextension_generate_repair_artifact_command(
         typer.echo(json_module.dumps(artifact.to_json_dict(), sort_keys=False))
     else:
         console.print(render_networkextension_repair_artifact(artifact), markup=False)
+
+
+@networkextension_app.command("apply-repair-artifact")
+def networkextension_apply_repair_artifact_command(
+    artifact: Path = typer.Option(DEFAULT_ARTIFACT, "--artifact", help="Existing generated repair artifact plist to apply."),
+    metadata: Path = typer.Option(DEFAULT_METADATA, "--metadata", help="JSON metadata produced with the generated artifact."),
+    target: Path = typer.Option(DEFAULT_TARGET, "--target", help="Target plist. Must be exactly the protected NetworkExtension plist path."),
+    backup_dir: Path = typer.Option(DEFAULT_BACKUP_DIR, "--backup-dir", help="User-controlled backup destination."),
+    confirm_apply: str | None = typer.Option(None, "--confirm-apply", help=f"Dangerous confirmation string: {CONFIRMATION_STRING}"),
+    protected_target: Path = typer.Option(DEFAULT_TARGET, "--protected-target", help="Expected protected target path; testing override for fixture roots."),
+    json_output: bool = typer.Option(False, "--json", help="Emit deterministic JSON."),
+):
+    result = apply_networkextension_repair_artifact(
+        artifact,
+        metadata,
+        target_path=target,
+        backup_dir=backup_dir,
+        confirm_apply=confirm_apply,
+        protected_target=protected_target,
+    )
+    if json_output:
+        typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_networkextension_repair_apply(result), markup=False)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -1118,7 +1143,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "networkextension_object_graph_summary", "networkextension_repair_candidates_summary", "networkextension_candidate_validation_summary", "networkextension_repair_plan_preview_summary", "networkextension_repair_transaction_package_summary", "networkextension_manual_repair_runbook_summary", "networkextension_repair_simulation_summary", "networkextension_repair_artifact_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "networkextension_object_graph_summary", "networkextension_repair_candidates_summary", "networkextension_candidate_validation_summary", "networkextension_repair_plan_preview_summary", "networkextension_repair_transaction_package_summary", "networkextension_manual_repair_runbook_summary", "networkextension_repair_simulation_summary", "networkextension_repair_artifact_summary", "networkextension_repair_apply_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -1152,6 +1177,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "networkextension_manual_repair_runbook_diff": _bundle_networkextension_manual_repair_runbook_diff(before_report, after_report),
         "networkextension_repair_simulation_diff": _bundle_networkextension_repair_simulation_diff(before_report, after_report),
         "networkextension_repair_artifact_diff": _bundle_networkextension_repair_artifact_diff(before_report, after_report),
+        "networkextension_repair_apply_diff": _bundle_networkextension_repair_apply_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1548,6 +1574,23 @@ def _bundle_networkextension_repair_artifact_diff(before_report: dict[str, Any],
     }
 
 
+def _bundle_networkextension_repair_apply_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("networkextension_repair_apply_summary")
+    after_value = after_report.get("networkextension_repair_apply_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    return {
+        "status_before": str(before.get("final_status", "DRY_RUN")),
+        "status_after": str(after.get("final_status", "DRY_RUN")),
+        "mutation_performed_before": bool(before.get("mutation_performed", False)),
+        "mutation_performed_after": bool(after.get("mutation_performed", False)),
+        "backup_created_before": bool(before.get("backup_created", False)),
+        "backup_created_after": bool(after.get("backup_created", False)),
+        "target_path_before": str(before.get("target_path", "")),
+        "target_path_after": str(after.get("target_path", "")),
+    }
+
+
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("trace_correlation_summary")
     after_value = after_report.get("trace_correlation_summary")
@@ -1633,6 +1676,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     networkextension_manual_repair_runbook = diff.get("networkextension_manual_repair_runbook_diff", {})
     networkextension_repair_simulation = diff.get("networkextension_repair_simulation_diff", {})
     networkextension_repair_artifact = diff.get("networkextension_repair_artifact_diff", {})
+    networkextension_repair_apply = diff.get("networkextension_repair_apply_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1780,6 +1824,12 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Removed objects: {networkextension_repair_artifact.get('removed_object_count_delta', 0):+d}",
         f"- UID rewrites: {networkextension_repair_artifact.get('uid_rewrite_count_delta', 0):+d}",
         f"- Generated SHA256: {networkextension_repair_artifact.get('generated_artifact_sha256_after', '') or 'none'}",
+        "",
+        "NetworkExtension Repair Apply Diff",
+        f"- Status: {networkextension_repair_apply.get('status_before', 'DRY_RUN')} → {networkextension_repair_apply.get('status_after', 'DRY_RUN')}",
+        f"- Mutation performed: {str(networkextension_repair_apply.get('mutation_performed_before', False)).lower()} → {str(networkextension_repair_apply.get('mutation_performed_after', False)).lower()}",
+        f"- Backup created: {str(networkextension_repair_apply.get('backup_created_before', False)).lower()} → {str(networkextension_repair_apply.get('backup_created_after', False)).lower()}",
+        f"- Target path: {networkextension_repair_apply.get('target_path_after', '') or 'none'}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",

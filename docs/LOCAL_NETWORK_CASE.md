@@ -273,4 +273,23 @@ Artifact metadata includes source artifact metadata, source SHA256, generated ar
 
 Support bundles include `networkextension-repair-artifact.plist`, `networkextension-repair-artifact.json`, and `networkextension-repair-artifact.txt`. Bundle diffs include `NetworkExtension Repair Artifact Diff` for generated artifact IDs, validation-result changes, object-removal deltas, UID rewrite deltas, and generated artifact hash changes.
 
+## NetworkExtension guarded repair artifact apply
+
+`mse networkextension apply-repair-artifact` is the first command with an explicitly guarded apply path. Its default mode is dry-run and non-mutating. It never regenerates repair content; it consumes an already generated repair artifact plus metadata and performs only preflight validation unless the caller supplies the dangerous confirmation string `APPLY_NETWORKEXTENSION_REPAIR_ARTIFACT`.
+
+Before any write, the command requires all of the following to pass:
+
+- input artifact exists and reparses as a plist
+- artifact SHA256 matches the generated-artifact hash in metadata
+- target source plist exists
+- current source SHA256 matches the source hash recorded when the artifact was generated
+- target path is exactly the protected NetworkExtension plist path
+- backup destination is user-controlled and outside protected/live plist locations
+- System Settings/System Preferences and Chrome are not running
+- explicit confirmation string was provided
+
+If any check is ambiguous or fails, the command remains fail-closed. Without confirmation it reports `dry_run: true` and `mutation_performed: false` even when it can list blockers. With confirmation, it creates a timestamped backup first, verifies backup SHA256 equals the current source SHA256, then writes the generated artifact atomically where possible. It never deletes files, never edits LaunchServices, never resets TCC, never unloads/reloads NetworkExtension services, never performs broad cleanup, and never modifies anything except the single confirmed target plist.
+
+Apply output records `dry_run`, `mutation_performed`, `backup_created`, source/backup/generated hashes, target path, backup path, timestamp, preflight checks, blockers, post-apply validation commands, rollback commands, and final status. Support bundles include the dry-run metadata artifacts `networkextension-repair-apply.json` and `networkextension-repair-apply.txt`, and bundle diffs include `NetworkExtension Repair Apply Diff`.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.

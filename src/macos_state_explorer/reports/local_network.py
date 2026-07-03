@@ -29,6 +29,7 @@ from macos_state_explorer.networkextension_repair_transaction_package import bui
 from macos_state_explorer.networkextension_manual_repair_runbook import build_networkextension_manual_repair_runbook, networkextension_manual_repair_runbook_summary, render_networkextension_manual_repair_runbook, render_networkextension_manual_repair_runbook_summary
 from macos_state_explorer.networkextension_repair_simulation import build_networkextension_repair_simulation, networkextension_repair_simulation_summary, render_networkextension_repair_simulation, render_networkextension_repair_simulation_summary
 from macos_state_explorer.networkextension_repair_artifact import build_networkextension_repair_artifact, networkextension_repair_artifact_not_generated, networkextension_repair_artifact_summary, render_networkextension_repair_artifact, render_networkextension_repair_artifact_summary
+from macos_state_explorer.networkextension_repair_apply import apply_networkextension_repair_artifact, networkextension_repair_apply_summary, render_networkextension_repair_apply, render_networkextension_repair_apply_summary
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, networkextension_state_summary, render_networkextension_state, render_networkextension_state_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, render_trace_correlation_evidence, render_trace_correlation_summary
@@ -85,6 +86,7 @@ class LocalNetworkReport:
         payload["networkextension_manual_repair_runbook_summary"] = networkextension_manual_repair_runbook_summary(_report_networkextension_manual_repair_runbook(self))
         payload["networkextension_repair_simulation_summary"] = networkextension_repair_simulation_summary(_report_networkextension_repair_simulation(self))
         payload["networkextension_repair_artifact_summary"] = networkextension_repair_artifact_summary(_report_networkextension_repair_artifact(self))
+        payload["networkextension_repair_apply_summary"] = networkextension_repair_apply_summary(_report_networkextension_repair_apply())
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -174,6 +176,8 @@ class LocalNetworkReport:
             lines.extend(["", render_networkextension_repair_simulation_summary(payload["networkextension_repair_simulation_summary"])])
         if payload.get("networkextension_repair_artifact_summary"):
             lines.extend(["", render_networkextension_repair_artifact_summary(payload["networkextension_repair_artifact_summary"])])
+        if payload.get("networkextension_repair_apply_summary"):
+            lines.extend(["", render_networkextension_repair_apply_summary(payload["networkextension_repair_apply_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -312,6 +316,13 @@ def write_local_network_support_bundle(
     )
     (bundle / "networkextension-repair-artifact.json").write_text(json.dumps(networkextension_repair_artifact.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "networkextension-repair-artifact.txt").write_text(render_networkextension_repair_artifact(networkextension_repair_artifact) + "\n")
+    networkextension_repair_apply = apply_networkextension_repair_artifact(
+        bundle / "networkextension-repair-artifact.plist",
+        bundle / "networkextension-repair-artifact.json",
+        target_path=Path(networkextension_repair_artifact.source_artifact.get("path", "/Library/Preferences/com.apple.networkextension.plist")),
+    )
+    (bundle / "networkextension-repair-apply.json").write_text(json.dumps(networkextension_repair_apply.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "networkextension-repair-apply.txt").write_text(render_networkextension_repair_apply(networkextension_repair_apply) + "\n")
     return bundle
 
 
@@ -407,6 +418,10 @@ def _report_networkextension_repair_artifact(report: LocalNetworkReport):
     runbook = _report_networkextension_manual_repair_runbook(report)
     with tempfile.TemporaryDirectory(prefix="mse-ne-repair-artifact-report-") as temp_dir:
         return _build_networkextension_repair_artifact_or_metadata(runbook, simulation, Path(temp_dir) / "networkextension-repair-artifact.plist")
+
+
+def _report_networkextension_repair_apply():
+    return apply_networkextension_repair_artifact()
 
 
 def _build_networkextension_repair_artifact_or_metadata(runbook, simulation, output_path: Path):
