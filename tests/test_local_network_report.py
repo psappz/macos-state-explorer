@@ -299,6 +299,79 @@ def test_report_marks_networkextension_branch_completed_and_keeps_next_action_la
     assert "Next action focus: launchservices" in rendered
 
 
+def test_report_json_contains_launchservices_fix_ready_runbook_after_networkextension_completed(monkeypatch, tmp_path):
+    fixture = _generated_repaired_artifact(tmp_path)
+    fixture["source"].write_bytes(fixture["artifact"].read_bytes())
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_TARGET", fixture["source"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_ARTIFACT", fixture["artifact"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_METADATA", fixture["metadata"])
+
+    payload = build_local_network_report(_snapshot(), branch_id="manual-empty-trash-reboot").to_json_dict()
+
+    runbook = payload["launchservices_fix_ready_runbook"]
+    assert runbook == {
+        "available": True,
+        "reason": "NetworkExtension is complete and LaunchServices evidence remains for Chrome/Google registrations.",
+        "blocked_by_networkextension": False,
+        "next_real_world_fix_attempt": "manual_empty_trash_reboot",
+        "operator_steps": [
+            "Inspect Finder Trash manually.",
+            "Only empty Trash if it contains disposable Chrome/Google leftovers.",
+            "Reboot macOS.",
+            "Open System Settings → Privacy & Security → Local Network.",
+            "Run verification again.",
+        ],
+        "verification_command": "mse verify local-network --branch manual-empty-trash-reboot",
+        "fallback_branch": "continue_launchservices_branch",
+        "do_not_continue_networkextension": True,
+    }
+
+
+def test_report_text_contains_launchservices_fix_ready_operator_runbook(monkeypatch, tmp_path):
+    fixture = _generated_repaired_artifact(tmp_path)
+    fixture["source"].write_bytes(fixture["artifact"].read_bytes())
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_TARGET", fixture["source"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_ARTIFACT", fixture["artifact"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_METADATA", fixture["metadata"])
+
+    rendered = build_local_network_report(_snapshot(), branch_id="manual-empty-trash-reboot").render_text()
+
+    assert "LaunchServices fix-ready runbook" in rendered
+    assert "NetworkExtension is complete; do not continue NetworkExtension repair work for this case unless new blocking NetworkExtension evidence appears." in rendered
+    assert "The next real-world fix attempt is LaunchServices-focused." in rendered
+    assert "Inspect Finder Trash manually." in rendered
+    assert "Only empty Trash if it contains disposable Chrome/Google leftovers." in rendered
+    assert "Reboot macOS." in rendered
+    assert "Open System Settings → Privacy & Security → Local Network." in rendered
+    assert "mse verify local-network --branch manual-empty-trash-reboot" in rendered
+    assert "If verification still fails, continue to the next LaunchServices branch, not NetworkExtension." in rendered
+
+
+def test_report_does_not_render_fix_ready_runbook_when_networkextension_not_completed():
+    report = build_local_network_report(_snapshot(), branch_id="manual-empty-trash-reboot")
+    payload = report.to_json_dict()
+
+    assert payload["launchservices_fix_ready_runbook"]["available"] is False
+    assert payload["launchservices_fix_ready_runbook"]["blocked_by_networkextension"] is True
+    assert "LaunchServices fix-ready runbook" not in report.render_text()
+
+
+def test_report_does_not_render_fix_ready_runbook_when_launchservices_clear(monkeypatch, tmp_path):
+    fixture = _generated_repaired_artifact(tmp_path)
+    fixture["source"].write_bytes(fixture["artifact"].read_bytes())
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_TARGET", fixture["source"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_ARTIFACT", fixture["artifact"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_METADATA", fixture["metadata"])
+    snapshot = Snapshot(host="clean-host", created_at=1, observations=[Observation(collector="launchservices", started_at=1, ended_at=1, payload={"entries": []})])
+
+    report = build_local_network_report(snapshot, branch_id="manual-empty-trash-reboot")
+    payload = report.to_json_dict()
+
+    assert payload["launchservices_fix_ready_runbook"]["available"] is False
+    assert payload["launchservices_fix_ready_runbook"]["reason"] == "LaunchServices evidence is clear."
+    assert "LaunchServices fix-ready runbook" not in report.render_text()
+
+
 def test_report_marks_networkextension_completed_without_launchservices_next_action_when_launchservices_clear(monkeypatch, tmp_path):
     fixture = _generated_repaired_artifact(tmp_path)
     fixture["source"].write_bytes(fixture["artifact"].read_bytes())
@@ -388,6 +461,8 @@ def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_p
         "command.json",
         "environment.json",
         "launchservices-analysis.json",
+        "launchservices-fix-ready-runbook.json",
+        "launchservices-fix-ready-runbook.txt",
         "networkextension-apply-validation.json",
         "networkextension-apply-validation.txt",
         "networkextension-candidate-validation.json",
@@ -558,6 +633,8 @@ def test_report_bundle_without_trace_records_no_trace_artifacts(monkeypatch, tmp
         "command.json",
         "environment.json",
         "launchservices-analysis.json",
+        "launchservices-fix-ready-runbook.json",
+        "launchservices-fix-ready-runbook.txt",
         "networkextension-apply-validation.json",
         "networkextension-apply-validation.txt",
         "networkextension-candidate-validation.json",

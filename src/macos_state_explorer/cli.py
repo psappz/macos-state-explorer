@@ -1163,7 +1163,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
     after_files = _bundle_file_set(after_path)
     before_evidence = _evidence_presence_by_id(before_report)
     after_evidence = _evidence_presence_by_id(after_report)
-    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "networkextension_object_graph_summary", "networkextension_repair_candidates_summary", "networkextension_candidate_validation_summary", "networkextension_repair_plan_preview_summary", "networkextension_repair_transaction_package_summary", "networkextension_manual_repair_runbook_summary", "networkextension_repair_simulation_summary", "networkextension_repair_artifact_summary", "networkextension_repair_apply_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
+    changed_fields = [field for field in ["diagnosis", "remediation_plan_summary", "verification", "generation_diff", "launchservices_outcome_summary", "launchservices_provenance_summary", "launchservices_producer_evidence_summary", "launchservices_regeneration_summary", "launchservices_cleanup_checklist_summary", "launchservices_cleanup_verification_summary", "launchservices_fix_ready_runbook", "networkextension_state_summary", "networkextension_correlation_summary", "networkextension_raw_references_summary", "networkextension_object_graph_summary", "networkextension_repair_candidates_summary", "networkextension_candidate_validation_summary", "networkextension_repair_plan_preview_summary", "networkextension_repair_transaction_package_summary", "networkextension_manual_repair_runbook_summary", "networkextension_repair_simulation_summary", "networkextension_repair_artifact_summary", "networkextension_repair_apply_summary", "trace_correlation_summary", "trace_timeline_summary"] if before_report.get(field) != after_report.get(field)]
     return {
         "command": "diff bundles",
         "before": {"path": str(before_path), "command": _read_json_if_exists(before_path / "command.json").get("command")},
@@ -1186,6 +1186,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "regeneration_diff": _bundle_regeneration_diff(before_report, after_report),
         "cleanup_checklist_diff": _bundle_cleanup_checklist_diff(before_report, after_report),
         "cleanup_verification_diff": _bundle_cleanup_verification_diff(before_report, after_report),
+        "launchservices_fix_ready_runbook_diff": _bundle_launchservices_fix_ready_runbook_diff(before_report, after_report),
         "networkextension_state_diff": _bundle_networkextension_state_diff(before_report, after_report),
         "networkextension_correlation_diff": _bundle_networkextension_correlation_diff(before_report, after_report),
         "networkextension_raw_references_diff": _bundle_networkextension_raw_references_diff(before_report, after_report),
@@ -1264,6 +1265,23 @@ def _bundle_outcome_diff(before_report: dict[str, Any], after_report: dict[str, 
         "status_after": str(after.get("automatic_remediation_status", "UNKNOWN")),
         "audit_informed_before": bool(before.get("audit_informed", False)),
         "audit_informed_after": bool(after.get("audit_informed", False)),
+    }
+
+
+def _bundle_launchservices_fix_ready_runbook_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("launchservices_fix_ready_runbook")
+    after_value = after_report.get("launchservices_fix_ready_runbook")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    return {
+        "available_before": bool(before.get("available", False)),
+        "available_after": bool(after.get("available", False)),
+        "next_real_world_fix_attempt_before": before.get("next_real_world_fix_attempt"),
+        "next_real_world_fix_attempt_after": after.get("next_real_world_fix_attempt"),
+        "verification_command_before": before.get("verification_command"),
+        "verification_command_after": after.get("verification_command"),
+        "do_not_continue_networkextension_before": bool(before.get("do_not_continue_networkextension", False)),
+        "do_not_continue_networkextension_after": bool(after.get("do_not_continue_networkextension", False)),
     }
 
 
@@ -1817,6 +1835,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     regeneration = diff.get("regeneration_diff", {})
     cleanup_checklist = diff.get("cleanup_checklist_diff", {})
     cleanup_verification = diff.get("cleanup_verification_diff", {})
+    launchservices_fix_ready_runbook = diff.get("launchservices_fix_ready_runbook_diff", {})
     networkextension_state = diff.get("networkextension_state_diff", {})
     networkextension_correlation = diff.get("networkextension_correlation_diff", {})
     networkextension_raw_references = diff.get("networkextension_raw_references_diff", {})
@@ -1885,6 +1904,12 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Newly appeared generations: {', '.join(cleanup_verification.get('newly_appeared_generations', [])) if cleanup_verification.get('newly_appeared_generations') else 'none'}",
         f"- Disappeared generations: {', '.join(cleanup_verification.get('disappeared_generations', [])) if cleanup_verification.get('disappeared_generations') else 'none'}",
         f"- Unchanged generations: {', '.join(cleanup_verification.get('unchanged_generations', [])) if cleanup_verification.get('unchanged_generations') else 'none'}",
+        "",
+        "LaunchServices Fix-Ready Runbook Diff",
+        f"- Availability: {launchservices_fix_ready_runbook.get('available_before', False)} → {launchservices_fix_ready_runbook.get('available_after', False)}",
+        f"- Next real-world fix attempt: {launchservices_fix_ready_runbook.get('next_real_world_fix_attempt_before') or 'none'} → {launchservices_fix_ready_runbook.get('next_real_world_fix_attempt_after') or 'none'}",
+        f"- Verification command: {launchservices_fix_ready_runbook.get('verification_command_before') or 'none'} → {launchservices_fix_ready_runbook.get('verification_command_after') or 'none'}",
+        f"- Do not continue NetworkExtension: {launchservices_fix_ready_runbook.get('do_not_continue_networkextension_before', False)} → {launchservices_fix_ready_runbook.get('do_not_continue_networkextension_after', False)}",
         "",
         "NetworkExtension State Diff",
         f"- Added artifacts: {', '.join(networkextension_state.get('added_artifacts', [])) if networkextension_state.get('added_artifacts') else 'none'}",
@@ -2049,7 +2074,7 @@ def diff_bundles_cmd(
     if json_output:
         typer.echo(json_module.dumps(diff, sort_keys=False))
     else:
-        console.print(_render_bundle_diff(diff), markup=False)
+        typer.echo(_render_bundle_diff(diff))
 
 
 @report_app.command("local-network")
@@ -2071,7 +2096,7 @@ def report_local_network_cmd(
     if json_output:
         typer.echo(json_module.dumps(report.to_json_dict(), sort_keys=False))
     else:
-        console.print(report.render_text(), markup=False)
+        typer.echo(report.render_text())
 
 
 @report_app.command("launchservices")
