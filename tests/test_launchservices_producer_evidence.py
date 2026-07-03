@@ -281,6 +281,6 @@ def test_producer_evidence_docs_keep_phase2_investigation_scope_public_project_o
     assert "modeled provenance" in docs
     assert "observed producer evidence" in docs
     assert "Chrome Local Network reference case" in docs
-    assert "WASP Prism" in docs
+    assert "Open State Diagnostics & Repair Framework" in docs
     assert "project" in docs
-    assert "WASP Lens" not in docs
+    assert "OSDRF" not in docs

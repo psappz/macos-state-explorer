@@ -2,7 +2,7 @@
 
 ## Context
 
-macOS State Explorer collects read-only macOS state, stores observations, derives hypotheses, and writes reports. As the project grows, collector code can become difficult to maintain if parsing, modeling, analysis, and presentation logic live in the same modules.
+Open State Diagnostics & Repair Framework collects read-only macOS state, stores observations, derives hypotheses, and writes reports. As the project grows, collector code can become difficult to maintain if parsing, modeling, analysis, and presentation logic live in the same modules.
 
 ## Decision
 

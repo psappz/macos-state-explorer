@@ -82,6 +82,14 @@ def _append_unrelated_apple_metadata(value, *, label="apple-regenerated"):
     return cloned
 
 
+def _append_many_unrelated_archive_objects(value, count=12):
+    cloned = _reverse_dictionary_order(value)
+    cloned["$objects"] = list(cloned["$objects"])
+    for index in range(count):
+        cloned["$objects"].append({"UnrelatedArchiveCache": f"cache-{index}", "Generation": index})
+    return cloned
+
+
 def _append_reappeared_repair_target(value, path="/missing/reappeared/Google Chrome"):
     cloned = _reverse_dictionary_order(value)
     cloned["$objects"] = list(cloned["$objects"])
@@ -150,6 +158,8 @@ def test_apply_validation_passes_when_apple_regenerates_unrelated_objects(tmp_pa
         "apple_regenerated_unrelated_archive_objects": True,
         "unrelated_semantic_differences": 1,
         "repair_relevant_semantic_differences": 0,
+        "blocking_repair_relevant_semantic_differences": 0,
+        "non_blocking_semantic_differences": 1,
         "difference_classification": "unrelated_semantic_difference",
         "failure_explanation": "",
         "remaining_repair_candidates": 0,
@@ -215,6 +225,62 @@ def test_apply_validation_passes_when_bytewise_mismatch_is_semantically_equivale
     assert all(stage["status"] == "PASS" for stage in payload["validation_stages"])
 
 
+def test_apply_validation_non_blocking_unrelated_diffs_do_not_fail_or_inflate_repair_relevant_counts(tmp_path):
+    fixture = generated_repaired_artifact(tmp_path)
+    artifact_value = _archive_value(fixture["artifact"])
+    _write_archive(fixture["source"], _append_many_unrelated_archive_objects(artifact_value, count=12))
+
+    payload = validate_networkextension_apply(fixture["source"], fixture["artifact"], metadata_path=fixture["metadata"]).to_json_dict()
+
+    assert payload["overall_verdict"] == "VALIDATION_PASSED_REPAIR_EFFECTIVE"
+    assert payload["repair_success_validation"]["repair_actually_successful"] is True
+    assert payload["repair_success_validation"]["repair_relevant_semantic_differences"] == 0
+    assert payload["repair_success_validation"]["blocking_repair_relevant_semantic_differences"] == 0
+    assert payload["repair_success_validation"]["non_blocking_semantic_differences"] == 12
+    assert len(payload["repair_relevant_semantic_differences"]) == 12
+    assert {entry["blocks_repair_success"] for entry in payload["repair_relevant_semantic_differences"]} == {False}
+
+
+def test_apply_validation_text_bounds_non_blocking_diff_samples(tmp_path):
+    fixture = generated_repaired_artifact(tmp_path)
+    artifact_value = _archive_value(fixture["artifact"])
+    _write_archive(fixture["source"], _append_many_unrelated_archive_objects(artifact_value, count=12))
+
+    result = CliRunner().invoke(app, ["networkextension", "apply-validation", "--target", str(fixture["source"]), "--artifact", str(fixture["artifact"]), "--metadata", str(fixture["metadata"])])
+
+    assert result.exit_code == 0
+    assert "Blocking repair-relevant semantic differences: 0" in result.stdout
+    assert "Non-blocking semantic drift differences: 12" in result.stdout
+    assert "Non-blocking archive drift is diagnostic and does not imply repair failure." in result.stdout
+    assert result.stdout.count("blocks repair success: false") <= 3
+    assert "9 additional non-blocking semantic drift entries omitted" in result.stdout
+
+
+def test_apply_validation_text_bounds_blocking_diff_samples(tmp_path):
+    fixture = generated_repaired_artifact(tmp_path)
+    artifact_value = _archive_value(fixture["artifact"])
+    changed = _reverse_dictionary_order(artifact_value)
+    changed["$objects"] = list(changed["$objects"])
+    changed["$objects"][4] = dict(
+        changed["$objects"][4],
+        SigningIdentifier="com.google.Chrome.BlockingDrift",
+        Path="/different/Google Chrome",
+        TeamIdentifier="TEAM-A",
+        BundleVersion="1",
+        DesignatedRequirement="req-a",
+        AuditToken="token-a",
+        ExtraRepairRelevantA="A",
+        ExtraRepairRelevantB="B",
+    )
+    _write_archive(fixture["source"], changed)
+
+    result = CliRunner().invoke(app, ["networkextension", "apply-validation", "--target", str(fixture["source"]), "--artifact", str(fixture["artifact"]), "--metadata", str(fixture["metadata"])])
+
+    assert result.exit_code == 0
+    assert result.stdout.count("blocks repair success: true") == 5
+    assert "3 additional blocking repair-relevant semantic difference entries omitted" in result.stdout
+
+
 def test_apply_validation_fails_when_semantic_structure_differs(tmp_path):
     fixture = generated_repaired_artifact(tmp_path)
     live_value = plistlib.loads(fixture["artifact"].read_bytes())
@@ -241,7 +307,13 @@ def test_apply_validation_fails_when_repair_target_reappears(tmp_path):
     assert payload["repair_success_validation"]["repair_actually_successful"] is False
     assert payload["repair_success_validation"]["difference_classification"] == "repair_relevant_difference"
     assert payload["repair_success_validation"]["repair_relevant_semantic_equivalence"] is False
-    assert payload["repair_success_validation"]["repair_relevant_semantic_differences"] > 0
+    entries = payload["repair_relevant_semantic_differences"]
+    blocking_entries = [entry for entry in entries if entry["blocks_repair_success"]]
+    non_blocking_entries = [entry for entry in entries if not entry["blocks_repair_success"]]
+    assert payload["repair_success_validation"]["repair_relevant_semantic_differences"] == len(blocking_entries)
+    assert payload["repair_success_validation"]["blocking_repair_relevant_semantic_differences"] == len(blocking_entries)
+    assert payload["repair_success_validation"]["non_blocking_semantic_differences"] == len(non_blocking_entries)
+    assert blocking_entries
     assert payload["failure"]["stage"] == "repair_relevant_semantic_difference"
     assert "repair target" in payload["repair_success_validation"]["failure_explanation"]
 
@@ -262,6 +334,8 @@ def test_apply_validation_fails_when_surviving_repair_relevant_identity_changes(
     assert payload["repair_success_validation"]["repair_relevant_semantic_equivalence"] is False
     assert payload["failure"]["stage"] == "repair_relevant_semantic_difference"
     assert "repair-relevant NetworkExtension object graph differs" in payload["repair_success_validation"]["failure_explanation"]
+    assert payload["repair_success_validation"]["blocking_repair_relevant_semantic_differences"] == 1
+    assert payload["repair_success_validation"]["non_blocking_semantic_differences"] == 0
     assert payload["repair_relevant_semantic_differences"] == [
         {
             "id": "ne-semantic-diff-0001",
@@ -407,7 +481,8 @@ def test_apply_validation_cli_text_and_json(tmp_path):
     assert "Repair-relevant semantic equivalence: true" in text_result.stdout
     assert "Byte-identical:" in text_result.stdout
     assert "Semantically equivalent:" in text_result.stdout
-    assert "SHA256 mismatch alone is not a failure when semantic validation passes." in text_result.stdout
+    assert "Full semantic mismatch is diagnostic only when repair validation passes." in text_result.stdout
+    assert "Non-blocking archive drift is diagnostic and does not imply repair failure." in text_result.stdout
 
 
 def test_apply_validation_cli_text_explains_repair_relevant_difference(tmp_path):
@@ -451,7 +526,7 @@ def test_apply_validation_report_bundle_and_diff(monkeypatch, tmp_path):
     before.mkdir()
     after.mkdir()
     (before / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "networkextension_apply_validation_summary": {"overall_verdict": "VALIDATION_FAILED", "repair_candidates_remaining": 2, "target_sha256": "old", "artifact_sha256": "new", "graph_consistency": "FAILED", "semantic_equivalence": False, "bytewise_sha256_identical": False, "serialization_difference_explained": "semantic mismatch"}}))
-    (after / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "networkextension_apply_validation_summary": {"overall_verdict": "VALIDATION_PASSED_REPAIR_EFFECTIVE", "repair_actually_successful": True, "repair_candidates_remaining": 0, "target_sha256": "same", "artifact_sha256": "same", "graph_consistency": "PASSED", "semantic_equivalence": False, "repair_relevant_semantic_equivalence": True, "apple_regenerated_unrelated_archive_objects": True, "unrelated_semantic_differences": 2, "repair_relevant_semantic_differences": 0, "repair_relevant_semantic_difference_entries": [{"id": "ne-semantic-diff-0001", "classification": "benign_archive_regeneration", "blocks_repair_success": False, "semantic_path": "$objects[5]", "explanation": "Target contains unrelated regenerated metadata."}], "bytewise_sha256_identical": False, "serialization_difference_explained": "unrelated Apple-generated archive objects differ; repair-relevant semantics match"}}))
+    (after / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "networkextension_apply_validation_summary": {"overall_verdict": "VALIDATION_PASSED_REPAIR_EFFECTIVE", "repair_actually_successful": True, "repair_candidates_remaining": 0, "target_sha256": "same", "artifact_sha256": "same", "graph_consistency": "PASSED", "semantic_equivalence": False, "repair_relevant_semantic_equivalence": True, "apple_regenerated_unrelated_archive_objects": True, "unrelated_semantic_differences": 2, "repair_relevant_semantic_differences": 0, "blocking_repair_relevant_semantic_differences": 0, "non_blocking_semantic_differences": 1, "repair_relevant_semantic_difference_entries": [{"id": "ne-semantic-diff-0001", "classification": "benign_archive_regeneration", "blocks_repair_success": False, "semantic_path": "$objects[5]", "explanation": "Target contains unrelated regenerated metadata."}], "bytewise_sha256_identical": False, "serialization_difference_explained": "unrelated Apple-generated archive objects differ; repair-relevant semantics match"}}))
 
     diff = json.loads(CliRunner().invoke(app, ["diff", "bundles", str(before), str(after), "--json"]).stdout)
     assert diff["networkextension_apply_validation_diff"]["verdict_before"] == "VALIDATION_FAILED"
@@ -461,6 +536,8 @@ def test_apply_validation_report_bundle_and_diff(monkeypatch, tmp_path):
     assert diff["networkextension_apply_validation_diff"]["apple_regenerated_unrelated_archive_objects_after"] is True
     assert diff["networkextension_apply_validation_diff"]["unrelated_semantic_differences_delta"] == 2
     assert diff["networkextension_apply_validation_diff"]["repair_relevant_semantic_differences_delta"] == 0
+    assert diff["networkextension_apply_validation_diff"]["blocking_repair_relevant_semantic_differences_delta"] == 0
+    assert diff["networkextension_apply_validation_diff"]["non_blocking_semantic_differences_delta"] == 1
     assert diff["networkextension_apply_validation_diff"]["repair_candidates_remaining_delta"] == -2
     assert diff["networkextension_apply_validation_diff"]["semantic_equivalence_before"] is False
     assert diff["networkextension_apply_validation_diff"]["semantic_equivalence_after"] is False
@@ -474,3 +551,6 @@ def test_apply_validation_report_bundle_and_diff(monkeypatch, tmp_path):
     assert "Repair-relevant semantic equivalence: false → true" in rendered
     assert "Semantic difference IDs added: ne-semantic-diff-0001" in rendered
     assert "Semantic difference classifications: benign_archive_regeneration" in rendered
+    assert "Blocking repair-relevant semantic differences: +0" in rendered
+    assert "Non-blocking semantic drift differences: +1" in rendered
+    assert "Full semantic mismatch diagnostic-only without blocking diffs." in rendered

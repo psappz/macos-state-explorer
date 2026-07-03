@@ -221,7 +221,7 @@ The transaction package does not edit plists, delete records, reset services, ex
 
 ## NetworkExtension manual repair runbook
 
-`mse networkextension manual-repair-runbook` is the first mutation-capable design artifact, but macos-state-explorer itself remains completely read-only. The command consumes the previous NetworkExtension evidence layers—identity correlation, raw references, object graph decoding, repair candidates, runtime validation, repair-plan preview, and repair transaction package—and emits a deterministic operator specification for a future experienced macOS engineer to review.
+`mse networkextension manual-repair-runbook` is the first mutation-capable design artifact, but the framework remains completely read-only. The command consumes the previous NetworkExtension evidence layers—identity correlation, raw references, object graph decoding, repair candidates, runtime validation, repair-plan preview, and repair transaction package—and emits a deterministic operator specification for a future experienced macOS engineer to review.
 
 For every transaction the runbook records:
 

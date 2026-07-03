@@ -281,6 +281,6 @@ def test_regeneration_documentation_and_version_updated():
 
     assert "Regeneration Analysis Engine" in docs
     assert "Observed" in docs and "Correlated" in docs and "Inferred" in docs and "Unknown" in docs
-    assert "WASP Prism" in docs
-    assert "WASP Lens" not in docs
+    assert "Open State Diagnostics & Repair Framework" in docs
+    assert "OSDRF" not in docs
     assert 'version = "1.1.1"' in pyproject
