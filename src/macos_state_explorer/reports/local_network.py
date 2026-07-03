@@ -50,6 +50,7 @@ class LocalNetworkReport:
         solution_json = self.solution.to_json_dict()
         verification_json = self.verification.to_json_dict()
         verification_json.pop("command", None)
+        networkextension_apply_validation = networkextension_apply_validation_summary(_report_networkextension_apply_validation())
         payload = {
             "command": "report local-network",
             "system_context": _system_context_to_json(self.snapshot),
@@ -59,7 +60,7 @@ class LocalNetworkReport:
             "matched_rules": solution_json["matched_rules"],
             "repair_candidates": solution_json["repair_candidates"],
             "verification": verification_json,
-            "next_actions": _next_actions_to_json(self.solution, self.verification, self.trace_analysis),
+            "next_actions": _next_actions_to_json(self.solution, self.verification, self.trace_analysis, networkextension_apply_validation),
         }
         if self.solution.remediation_plan_summary is not None:
             payload["remediation_plan_summary"] = self.solution.remediation_plan_summary
@@ -88,7 +89,8 @@ class LocalNetworkReport:
         payload["networkextension_repair_simulation_summary"] = networkextension_repair_simulation_summary(_report_networkextension_repair_simulation(self))
         payload["networkextension_repair_artifact_summary"] = networkextension_repair_artifact_summary(_report_networkextension_repair_artifact(self))
         payload["networkextension_repair_apply_summary"] = networkextension_repair_apply_summary(_report_networkextension_repair_apply())
-        payload["networkextension_apply_validation_summary"] = networkextension_apply_validation_summary(_report_networkextension_apply_validation())
+        payload["networkextension_apply_validation_summary"] = networkextension_apply_validation
+        payload["repair_branch_status"] = _repair_branch_status_to_json(self.solution, networkextension_apply_validation)
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -182,6 +184,8 @@ class LocalNetworkReport:
             lines.extend(["", render_networkextension_repair_apply_summary(payload["networkextension_repair_apply_summary"])])
         if payload.get("networkextension_apply_validation_summary"):
             lines.extend(["", render_networkextension_apply_validation_summary(payload["networkextension_apply_validation_summary"])])
+        if payload.get("repair_branch_status"):
+            lines.extend(["", _render_repair_branch_status(payload["repair_branch_status"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -566,21 +570,31 @@ def _next_actions_to_json(
     solution: LocalNetworkSolution,
     verification: LocalNetworkVerification,
     trace_analysis: dict[str, Any] | None,
+    networkextension_apply_validation: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
-    if verification.next_repair_candidate:
+    networkextension_completed = _networkextension_repair_effective(networkextension_apply_validation or {})
+    launchservices_remaining = _launchservices_evidence_present(solution)
+    next_repair_candidate = None
+    if networkextension_completed and launchservices_remaining and solution.repair_plan:
+        next_repair_candidate = solution.repair_plan[0]
+    elif not networkextension_completed:
+        next_repair_candidate = verification.next_repair_candidate
+    if next_repair_candidate:
         actions.append(
             {
                 "type": "repair",
-                "step": verification.next_step,
+                "scope": "launchservices" if networkextension_completed else "local-network",
+                "step": next_repair_candidate.manual_action,
                 "command": None,
-                "candidate_id": verification.next_repair_candidate.id,
+                "candidate_id": next_repair_candidate.id,
             }
         )
-    elif solution.repair_plan:
+    elif not networkextension_completed and solution.repair_plan:
         actions.append(
             {
                 "type": "repair",
+                "scope": "launchservices" if networkextension_completed else "local-network",
                 "step": solution.repair_plan[0].manual_action,
                 "command": None,
                 "candidate_id": solution.repair_plan[0].id,
@@ -589,6 +603,7 @@ def _next_actions_to_json(
     actions.append(
         {
             "type": "verify",
+            "scope": "local-network",
             "step": verification.retry_guidance,
             "command": f"mse verify local-network --branch {verification.branch_id}",
             "candidate_id": verification.branch_id,
@@ -600,9 +615,64 @@ def _next_actions_to_json(
     actions.append(
         {
             "type": "trace",
+            "scope": "local-network",
             "step": verification.fallback_guidance,
             "command": trace_command,
             "candidate_id": "trace-local-network",
         }
     )
     return actions
+
+
+def _networkextension_repair_effective(summary: dict[str, Any]) -> bool:
+    return (
+        summary.get("overall_verdict") == "VALIDATION_PASSED_REPAIR_EFFECTIVE"
+        and bool(summary.get("repair_actually_successful"))
+        and int(summary.get("repair_candidates_remaining", 0)) == 0
+        and int(summary.get("validation_candidates_remaining", 0)) == 0
+        and int(summary.get("blocking_repair_relevant_semantic_differences", 0)) == 0
+    )
+
+
+def _repair_branch_status_to_json(solution: LocalNetworkSolution, networkextension_apply_validation: dict[str, Any]) -> dict[str, Any]:
+    networkextension_completed = _networkextension_repair_effective(networkextension_apply_validation)
+    launchservices_evidence_present = _launchservices_evidence_present(solution)
+    next_launchservices_candidate = solution.repair_plan[0].id if solution.repair_plan else None
+    launchservices_status = "UNRESOLVED" if launchservices_evidence_present else "CLEAR"
+    return {
+        "networkextension": {
+            "status": "COMPLETED" if networkextension_completed else "UNRESOLVED",
+            "repair_actually_successful": bool(networkextension_apply_validation.get("repair_actually_successful", False)),
+            "overall_verdict": str(networkextension_apply_validation.get("overall_verdict", "VALIDATION_INCONCLUSIVE")),
+            "recommended_next_action": "none" if networkextension_completed else "continue_networkextension_branch",
+        },
+        "launchservices": {
+            "status": launchservices_status,
+            "evidence_present": launchservices_evidence_present,
+            "recommended_next_action": "continue_launchservices_branch" if launchservices_evidence_present else "none",
+            "candidate_id": next_launchservices_candidate,
+        },
+        "next_action_focus": "launchservices" if networkextension_completed and launchservices_evidence_present else "networkextension" if not networkextension_completed else "none",
+    }
+
+
+def _launchservices_evidence_present(solution: LocalNetworkSolution) -> bool:
+    return any(
+        evidence.present and "launchservices" in evidence.source.lower()
+        for evidence in solution.evidence
+    )
+
+
+def _render_repair_branch_status(status: dict[str, Any]) -> str:
+    networkextension_value = status.get("networkextension")
+    launchservices_value = status.get("launchservices")
+    networkextension = networkextension_value if isinstance(networkextension_value, dict) else {}
+    launchservices = launchservices_value if isinstance(launchservices_value, dict) else {}
+    return "\n".join(
+        [
+            "Repair branch status",
+            f"- NetworkExtension repair branch: {networkextension.get('status', 'UNKNOWN')}",
+            f"- Remaining branch: LaunchServices {str(launchservices.get('status', 'UNKNOWN')).lower()}",
+            f"- Next action focus: {status.get('next_action_focus', 'unknown')}",
+        ]
+    )

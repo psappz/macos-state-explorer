@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -10,6 +11,12 @@ from macos_state_explorer.core.model import Observation, Snapshot
 from macos_state_explorer.launchservices.generations import analyze_generations
 from macos_state_explorer.launchservices.models import LaunchServicesRecord, LaunchServicesStatus
 from macos_state_explorer.launchservices.remediation_plan import plan_launchservices_remediation
+from macos_state_explorer.networkextension_candidate_validation import build_networkextension_candidate_validation
+from macos_state_explorer.networkextension_manual_repair_runbook import build_networkextension_manual_repair_runbook
+from macos_state_explorer.networkextension_repair_artifact import build_networkextension_repair_artifact
+from macos_state_explorer.networkextension_repair_plan_preview import build_networkextension_repair_plan_preview
+from macos_state_explorer.networkextension_repair_simulation import build_networkextension_repair_simulation
+from macos_state_explorer.networkextension_repair_transaction_package import build_networkextension_repair_transaction_package
 from macos_state_explorer.reports.local_network import build_local_network_report, write_local_network_support_bundle
 
 REPORT_REQUIRED_KEYS = [
@@ -23,6 +30,46 @@ REPORT_REQUIRED_KEYS = [
     "verification",
     "next_actions",
 ]
+
+
+def _write_networkextension_candidate_fixture(root: Path) -> dict[str, Path]:
+    prefs = root / "Library" / "Preferences"
+    prefs.mkdir(parents=True)
+    installed_exe = root / "Applications" / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome"
+    installed_exe.parent.mkdir(parents=True)
+    installed_exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    missing_clone = root / "private" / "var" / "folders" / "xx" / "com.google.Chrome.code_sign_clone" / "Contents" / "MacOS" / "Google Chrome"
+    missing_normal = root / "Applications" / "Missing Chrome.app" / "Contents" / "MacOS" / "Google Chrome"
+    objects = [
+        "$null",
+        {"ClientIdentities": plistlib.UID(2)},
+        [plistlib.UID(3), plistlib.UID(5), plistlib.UID(7), plistlib.UID(9)],
+        {"ClientIdentity": plistlib.UID(4), "State": "active"},
+        {"SigningIdentifier": "com.google.Chrome", "Path": str(installed_exe)},
+        {"ClientIdentity": plistlib.UID(6), "State": "historical"},
+        {"SigningIdentifier": "com.google.Chrome.code_sign_clone", "Path": str(missing_clone)},
+        {"ClientIdentity": plistlib.UID(8), "State": "orphaned"},
+        {"SigningIdentifier": "com.google.Chrome", "Path": str(missing_normal)},
+        {"ClientIdentity": plistlib.UID(10), "State": "stale"},
+        {"SigningIdentifier": "com.google.Chrome", "Path": str(missing_normal)},
+    ]
+    source = prefs / "com.apple.networkextension.plist"
+    source.write_bytes(plistlib.dumps({"$archiver": "NSKeyedArchiver", "$objects": objects, "$top": {"root": plistlib.UID(1)}, "$version": 100000}, fmt=plistlib.FMT_BINARY))
+    return {"root": root, "source": source}
+
+
+def _generated_repaired_artifact(tmp_path: Path) -> dict[str, Path]:
+    fixture = _write_networkextension_candidate_fixture(tmp_path / "ne")
+    validation = build_networkextension_candidate_validation([fixture["root"]], process_rows=[])
+    preview = build_networkextension_repair_plan_preview(validation)
+    package = build_networkextension_repair_transaction_package(preview, [fixture["root"]])
+    runbook = build_networkextension_manual_repair_runbook(package, [fixture["root"]])
+    simulation = build_networkextension_repair_simulation(runbook, [fixture["root"]])
+    artifact_path = tmp_path / "generated" / "networkextension-repair-artifact.plist"
+    artifact = build_networkextension_repair_artifact(runbook, simulation, artifact_path, [fixture["root"]])
+    metadata = artifact_path.with_suffix(".json")
+    metadata.write_text(json.dumps(artifact.to_json_dict(), sort_keys=True), encoding="utf-8")
+    return {"root": fixture["root"], "source": fixture["source"], "artifact": artifact_path, "metadata": metadata}
 
 
 def _snapshot() -> Snapshot:
@@ -214,6 +261,59 @@ def test_report_json_contract_allows_backwards_compatible_additions_after_requir
     payload["future_optional_field"] = {"safe": True}
 
     _assert_required_key_prefix(payload, REPORT_REQUIRED_KEYS)
+
+
+def test_report_marks_networkextension_branch_completed_and_keeps_next_action_launchservices(monkeypatch, tmp_path):
+    fixture = _generated_repaired_artifact(tmp_path)
+    fixture["source"].write_bytes(fixture["artifact"].read_bytes())
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_TARGET", fixture["source"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_ARTIFACT", fixture["artifact"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_METADATA", fixture["metadata"])
+
+    report = build_local_network_report(_snapshot(), branch_id="manual-empty-trash-reboot")
+    payload = report.to_json_dict()
+
+    assert payload["networkextension_apply_validation_summary"]["repair_actually_successful"] is True
+    assert payload["repair_branch_status"] == {
+        "networkextension": {
+            "status": "COMPLETED",
+            "repair_actually_successful": True,
+            "overall_verdict": "VALIDATION_PASSED_REPAIR_EFFECTIVE",
+            "recommended_next_action": "none",
+        },
+        "launchservices": {
+            "status": "UNRESOLVED",
+            "evidence_present": True,
+            "recommended_next_action": "continue_launchservices_branch",
+            "candidate_id": "manual-reinstall-chrome",
+        },
+        "next_action_focus": "launchservices",
+    }
+    assert payload["next_actions"][0]["candidate_id"] == "manual-reinstall-chrome"
+    assert payload["next_actions"][0]["scope"] == "launchservices"
+
+    rendered = report.render_text()
+    assert "Repair branch status" in rendered
+    assert "NetworkExtension repair branch: COMPLETED" in rendered
+    assert "Remaining branch: LaunchServices unresolved" in rendered
+    assert "Next action focus: launchservices" in rendered
+
+
+def test_report_marks_networkextension_completed_without_launchservices_next_action_when_launchservices_clear(monkeypatch, tmp_path):
+    fixture = _generated_repaired_artifact(tmp_path)
+    fixture["source"].write_bytes(fixture["artifact"].read_bytes())
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_TARGET", fixture["source"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_ARTIFACT", fixture["artifact"])
+    monkeypatch.setattr("macos_state_explorer.reports.local_network.DEFAULT_APPLY_VALIDATION_METADATA", fixture["metadata"])
+    snapshot = Snapshot(host="clean-host", created_at=1, observations=[Observation(collector="launchservices", started_at=1, ended_at=1, payload={"entries": []})])
+
+    payload = build_local_network_report(snapshot).to_json_dict()
+
+    assert payload["repair_branch_status"]["networkextension"]["status"] == "COMPLETED"
+    assert payload["repair_branch_status"]["launchservices"]["status"] == "CLEAR"
+    assert payload["repair_branch_status"]["next_action_focus"] == "none"
+    assert [action["type"] for action in payload["next_actions"]] == ["verify", "trace"]
+    assert all(action["scope"] != "launchservices" for action in payload["next_actions"])
 
 
 def test_report_human_output_contains_support_ready_sections(monkeypatch):

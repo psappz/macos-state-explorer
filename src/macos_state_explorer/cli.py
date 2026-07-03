@@ -1199,6 +1199,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "networkextension_repair_artifact_diff": _bundle_networkextension_repair_artifact_diff(before_report, after_report),
         "networkextension_repair_apply_diff": _bundle_networkextension_repair_apply_diff(before_report, after_report),
         "networkextension_apply_validation_diff": _bundle_networkextension_apply_validation_diff(before_report, after_report),
+        "repair_branch_status_diff": _bundle_repair_branch_status_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1679,6 +1680,55 @@ def _bundle_networkextension_apply_validation_diff(before_report: dict[str, Any]
     }
 
 
+def _bundle_repair_branch_status_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("repair_branch_status")
+    after_value = after_report.get("repair_branch_status")
+    before = before_value if isinstance(before_value, dict) else _repair_branch_status_from_apply_summary(before_report)
+    after = after_value if isinstance(after_value, dict) else _repair_branch_status_from_apply_summary(after_report)
+    before_networkextension_value = before.get("networkextension")
+    after_networkextension_value = after.get("networkextension")
+    before_launchservices_value = before.get("launchservices")
+    after_launchservices_value = after.get("launchservices")
+    before_networkextension = before_networkextension_value if isinstance(before_networkextension_value, dict) else {}
+    after_networkextension = after_networkextension_value if isinstance(after_networkextension_value, dict) else {}
+    before_launchservices = before_launchservices_value if isinstance(before_launchservices_value, dict) else {}
+    after_launchservices = after_launchservices_value if isinstance(after_launchservices_value, dict) else {}
+    return {
+        "networkextension_status_before": str(before_networkextension.get("status", "UNKNOWN")),
+        "networkextension_status_after": str(after_networkextension.get("status", "UNKNOWN")),
+        "launchservices_status_before": str(before_launchservices.get("status", "UNKNOWN")),
+        "launchservices_status_after": str(after_launchservices.get("status", "UNKNOWN")),
+        "next_action_focus_before": str(before.get("next_action_focus", "unknown")),
+        "next_action_focus_after": str(after.get("next_action_focus", "unknown")),
+    }
+
+
+def _repair_branch_status_from_apply_summary(report: dict[str, Any]) -> dict[str, Any]:
+    summary_value = report.get("networkextension_apply_validation_summary")
+    summary = summary_value if isinstance(summary_value, dict) else {}
+    networkextension_completed = (
+        summary.get("overall_verdict") == "VALIDATION_PASSED_REPAIR_EFFECTIVE"
+        and bool(summary.get("repair_actually_successful", False))
+        and int(summary.get("repair_candidates_remaining", 0)) == 0
+        and int(summary.get("validation_candidates_remaining", 0)) == 0
+        and int(summary.get("blocking_repair_relevant_semantic_differences", 0)) == 0
+    )
+    evidence = report.get("evidence")
+    launchservices_present = True
+    if isinstance(evidence, list) and evidence:
+        launchservices_present = any(
+            isinstance(item, dict)
+            and bool(item.get("present", True))
+            and "launchservices" in str(item.get("source", "")).lower()
+            for item in evidence
+        )
+    return {
+        "networkextension": {"status": "COMPLETED" if networkextension_completed else "UNRESOLVED"},
+        "launchservices": {"status": "UNRESOLVED" if launchservices_present else "CLEAR"},
+        "next_action_focus": "launchservices" if networkextension_completed and launchservices_present else "networkextension" if not networkextension_completed else "none",
+    }
+
+
 def _semantic_difference_ids(summary: dict[str, Any]) -> list[str]:
     entries = summary.get("repair_relevant_semantic_difference_entries")
     if not isinstance(entries, list):
@@ -1780,6 +1830,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     networkextension_repair_artifact = diff.get("networkextension_repair_artifact_diff", {})
     networkextension_repair_apply = diff.get("networkextension_repair_apply_diff", {})
     networkextension_apply_validation = diff.get("networkextension_apply_validation_diff", {})
+    repair_branch_status = diff.get("repair_branch_status_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1957,6 +2008,11 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Semantic difference IDs added: {', '.join(networkextension_apply_validation.get('semantic_difference_ids_added', [])) if networkextension_apply_validation.get('semantic_difference_ids_added') else 'none'}",
         f"- Semantic difference classifications: {', '.join(networkextension_apply_validation.get('semantic_difference_classifications_after', [])) if networkextension_apply_validation.get('semantic_difference_classifications_after') else 'none'}",
         f"- Graph consistency: {networkextension_apply_validation.get('graph_consistency_before', 'UNKNOWN')} → {networkextension_apply_validation.get('graph_consistency_after', 'UNKNOWN')}",
+        "",
+        "Repair Branch Status Diff",
+        f"- NetworkExtension branch: {repair_branch_status.get('networkextension_status_before', 'UNKNOWN')} → {repair_branch_status.get('networkextension_status_after', 'UNKNOWN')}",
+        f"- LaunchServices branch: {repair_branch_status.get('launchservices_status_before', 'UNKNOWN')} → {repair_branch_status.get('launchservices_status_after', 'UNKNOWN')}",
+        f"- Next action focus: {repair_branch_status.get('next_action_focus_before', 'unknown')} → {repair_branch_status.get('next_action_focus_after', 'unknown')}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",
