@@ -241,6 +241,43 @@ def test_apply_validation_non_blocking_unrelated_diffs_do_not_fail_or_inflate_re
     assert {entry["blocks_repair_success"] for entry in payload["repair_relevant_semantic_differences"]} == {False}
 
 
+def test_apply_validation_zero_blocking_diffs_with_candidate_row_noise_is_success(tmp_path, monkeypatch):
+    fixture = generated_repaired_artifact(tmp_path)
+    artifact_value = _archive_value(fixture["artifact"])
+    _write_archive(fixture["source"], _append_many_unrelated_archive_objects(artifact_value, count=4))
+
+    class CandidateRowsWithNonExecutableNoise:
+        def to_json_dict(self):
+            return {
+                "candidates": [
+                    {
+                        "object_reference": "$objects[99]",
+                        "signing_identifier": "com.google.Chrome",
+                        "executable_path": "/diagnostic/noise/Google Chrome",
+                        "could_ever_be_safely_removed": False,
+                        "safety_classification": "manual_only",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        "macos_state_explorer.networkextension_apply_validation.build_networkextension_repair_candidates",
+        lambda paths: CandidateRowsWithNonExecutableNoise(),
+    )
+
+    payload = validate_networkextension_apply(fixture["source"], fixture["artifact"], metadata_path=fixture["metadata"]).to_json_dict()
+
+    assert payload["overall_verdict"] == "VALIDATION_PASSED_REPAIR_EFFECTIVE"
+    assert payload["failure"] is None
+    assert payload["repair_success_validation"]["repair_actually_successful"] is True
+    assert payload["repair_success_validation"]["blocking_repair_relevant_semantic_differences"] == 0
+    assert payload["repair_success_validation"]["repair_relevant_semantic_differences"] == 0
+    assert payload["repair_success_validation"]["non_blocking_semantic_differences"] == 4
+    assert payload["statistics"]["repair_candidates_remaining"] == 0
+    assert payload["statistics"]["validation_candidates_remaining"] == 0
+    assert next(stage for stage in payload["validation_stages"] if stage["stage"] == "repair_success_validation")["status"] == "PASS"
+
+
 def test_apply_validation_text_bounds_non_blocking_diff_samples(tmp_path):
     fixture = generated_repaired_artifact(tmp_path)
     artifact_value = _archive_value(fixture["artifact"])
@@ -315,7 +352,7 @@ def test_apply_validation_fails_when_repair_target_reappears(tmp_path):
     assert payload["repair_success_validation"]["non_blocking_semantic_differences"] == len(non_blocking_entries)
     assert blocking_entries
     assert payload["failure"]["stage"] == "repair_relevant_semantic_difference"
-    assert "repair target" in payload["repair_success_validation"]["failure_explanation"]
+    assert "repair-relevant NetworkExtension object graph differs" in payload["repair_success_validation"]["failure_explanation"]
 
 
 def test_apply_validation_fails_when_surviving_repair_relevant_identity_changes(tmp_path):
