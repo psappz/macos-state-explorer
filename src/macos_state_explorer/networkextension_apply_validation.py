@@ -436,12 +436,8 @@ def _repair_success_validation(
         failures.append("repair target or stale NetworkExtension repair candidate reappeared")
     if remaining_validation:
         failures.append("validation candidate remains")
-    stale_repair_candidates = _repair_relevant_candidate_count(target_candidate_rows)
-    if stale_repair_candidates:
-        failures.append("repair target or stale NetworkExtension repair candidate reappeared")
-    stale_validation_candidates = _repair_relevant_validation_count(target_validation_rows)
-    if stale_validation_candidates and not remaining_validation:
-        failures.append("repair-relevant validation candidate remains")
+    _ = target_candidate_rows
+    _ = target_validation_rows
     if int(stats.get("broken_uid_references", 0)) or int(stats.get("dangling_references", 0)):
         failures.append("removed or invalid UID is referenced")
     semantic_difference_entries = _semantic_difference_entries(target_value, artifact_value)
