@@ -581,6 +581,14 @@ def test_apply_validation_report_bundle_and_diff(monkeypatch, tmp_path):
     assert diff["networkextension_apply_validation_diff"]["serialization_difference_explained_after"] == "unrelated Apple-generated archive objects differ; repair-relevant semantics match"
     assert diff["networkextension_apply_validation_diff"]["semantic_difference_ids_added"] == ["ne-semantic-diff-0001"]
     assert diff["networkextension_apply_validation_diff"]["semantic_difference_classifications_after"] == ["benign_archive_regeneration"]
+    assert diff["repair_branch_status_diff"] == {
+        "networkextension_status_before": "UNRESOLVED",
+        "networkextension_status_after": "COMPLETED",
+        "launchservices_status_before": "UNRESOLVED",
+        "launchservices_status_after": "UNRESOLVED",
+        "next_action_focus_before": "networkextension",
+        "next_action_focus_after": "launchservices",
+    }
     rendered = CliRunner().invoke(app, ["diff", "bundles", str(before), str(after)]).stdout
     assert "NetworkExtension Apply Validation Diff" in rendered
     assert "Validation result: VALIDATION_FAILED → VALIDATION_PASSED_REPAIR_EFFECTIVE" in rendered
@@ -591,3 +599,6 @@ def test_apply_validation_report_bundle_and_diff(monkeypatch, tmp_path):
     assert "Blocking repair-relevant semantic differences: +0" in rendered
     assert "Non-blocking semantic drift differences: +1" in rendered
     assert "Full semantic mismatch diagnostic-only without blocking diffs." in rendered
+    assert "Repair Branch Status Diff" in rendered
+    assert "NetworkExtension branch: UNRESOLVED → COMPLETED" in rendered
+    assert "Next action focus: networkextension → launchservices" in rendered
