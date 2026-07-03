@@ -253,4 +253,24 @@ The JSON contract deliberately records `read_only: true`, `mutation_performed: f
 
 The command does not modify real files, delete objects from the live plist, reset services, change diagnosis, change ranking, change confidence, change solver behavior, change repair execution behavior, or alter LaunchServices behavior. Support bundles include `networkextension-repair-simulation.json` and `networkextension-repair-simulation.txt`, and bundle diffs include `NetworkExtension Repair Simulation Diff`.
 
+## NetworkExtension generated repair artifact
+
+`mse networkextension generate-repair-artifact` is a guarded offline artifact-generation layer on top of the transaction package, manual runbook, and repair simulation. It recomputes those inputs in the same process and refuses to write an artifact unless the in-process simulation result is successful (`simulation_passed`).
+
+The command may create only an offline generated plist artifact and metadata. It never installs the artifact, never overwrites the source plist, never copies anything back into a live preference location, never deletes or resets anything, never unloads/reloads NetworkExtension services, and never restarts services. Output paths under `/Library`, `/System`, `/private/var/db`, `/Library/Preferences`, or the inspected live NetworkExtension plist are rejected fail-closed.
+
+The JSON contract records the hard safety flags:
+
+- `read_only: true`
+- `mutation_performed: false`
+- `system_artifact_modified: false`
+- `executable_by_tool: false`
+- `automatic_execution_recommendation: "never"`
+- `offline_generated: true`
+- `installed: false`
+
+Artifact metadata includes source artifact metadata, source SHA256, generated artifact SHA256, removed object refs, UID rewrite count, array change count, dictionary change count, simulation verdict, validation result, and reparse status. After writing the offline plist, the command reparses it immediately and fails closed if parsing fails.
+
+Support bundles include `networkextension-repair-artifact.plist`, `networkextension-repair-artifact.json`, and `networkextension-repair-artifact.txt`. Bundle diffs include `NetworkExtension Repair Artifact Diff` for generated artifact IDs, validation-result changes, object-removal deltas, UID rewrite deltas, and generated artifact hash changes.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.
