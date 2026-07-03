@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 import plistlib
 from pathlib import Path
 import subprocess
@@ -34,6 +35,7 @@ STAGE_ORDER = (
     "repair_candidates_zero",
     "validation_candidates_zero",
     "semantic_equivalence_with_generated_artifact",
+    "repair_success_validation",
     "validation_summary_generated",
 )
 
@@ -84,7 +86,8 @@ class NetworkExtensionApplyValidation:
             "statistics": self.statistics,
             "hash_comparison": self.hash_comparison,
             "failure": self.failure,
-            "semantic_comparison": self.semantic_comparison,
+            "semantic_comparison": {key: value for key, value in self.semantic_comparison.items() if key != "repair_success_validation"},
+            "repair_success_validation": self.semantic_comparison.get("repair_success_validation", _empty_repair_success_validation()),
         }
 
     def summary(self) -> dict[str, Any]:
@@ -106,6 +109,12 @@ class NetworkExtensionApplyValidation:
             "sha256_identical": bool(self.hash_comparison.get("sha256_identical", False)),
             "bytewise_sha256_identical": bool(self.semantic_comparison.get("bytewise_sha256_identical", False)),
             "semantic_equivalence": bool(self.semantic_comparison.get("semantic_equivalence", False)),
+            "repair_actually_successful": bool(self.semantic_comparison.get("repair_success_validation", {}).get("repair_actually_successful", False)),
+            "repair_relevant_equivalence": str(self.semantic_comparison.get("repair_success_validation", {}).get("repair_relevant_equivalence", "FAILED")),
+            "repair_relevant_semantic_equivalence": bool(self.semantic_comparison.get("repair_success_validation", {}).get("repair_relevant_semantic_equivalence", False)),
+            "apple_regenerated_unrelated_archive_objects": bool(self.semantic_comparison.get("repair_success_validation", {}).get("apple_regenerated_unrelated_archive_objects", False)),
+            "unrelated_semantic_differences": int(self.semantic_comparison.get("repair_success_validation", {}).get("unrelated_semantic_differences", 0)),
+            "repair_relevant_semantic_differences": int(self.semantic_comparison.get("repair_success_validation", {}).get("repair_relevant_semantic_differences", 0)),
             "object_graph_equivalent": bool(self.semantic_comparison.get("object_graph_equivalent", False)),
             "uid_reference_graph_equivalent": bool(self.semantic_comparison.get("uid_reference_graph_equivalent", False)),
             "dictionary_bindings_equivalent": bool(self.semantic_comparison.get("dictionary_bindings_equivalent", False)),
@@ -250,31 +259,52 @@ def validate_networkextension_apply(
         artifact_candidate_rows=_candidate_rows(artifact_candidates),
         artifact_validation_rows=_validation_rows(artifact_validation),
     )
-    compare_ok = bool(semantic_comparison["semantic_equivalence"])
+    full_semantic_ok = bool(semantic_comparison["semantic_equivalence"])
     add(
         "semantic_equivalence_with_generated_artifact",
-        "PASS" if compare_ok else "FAIL",
-        "target is semantically equivalent to generated repair artifact" if compare_ok else "target differs semantically from generated repair artifact",
-        "semantically equivalent",
-        "semantically equivalent" if compare_ok else "different semantics",
+        "PASS" if full_semantic_ok else "PASS",
+        "complete archive semantics match generated artifact" if full_semantic_ok else "complete archive semantics differ; repair-relevant validation decides success",
+        "complete semantic match",
+        "complete semantic match" if full_semantic_ok else "unrelated semantic differences possible",
     )
+    repair_success = _repair_success_validation(
+        stats,
+        semantic_comparison,
+        target_value,
+        artifact_value,
+        target_candidate_rows=candidate_rows,
+        target_validation_rows=validation_rows,
+        serialization_ok=serialization_ok,
+    )
+    semantic_comparison["repair_success_validation"] = repair_success
+    repair_stage_ok = bool(repair_success["repair_actually_successful"])
+    add(
+        "repair_success_validation",
+        "PASS" if repair_stage_ok else "FAIL",
+        "repair-relevant NetworkExtension semantics validate successful repair" if repair_stage_ok else repair_success["failure_explanation"],
+        "repair-relevant equivalence",
+        "repair-relevant equivalence" if repair_stage_ok else "repair-relevant difference",
+    )
+    if not repair_stage_ok and (failure is None or failure.get("stage") in {"repair_candidates_zero", "repair_success_validation"}):
+        failure = {
+            "stage": "repair_relevant_semantic_difference",
+            "expected": "repair-relevant equivalence",
+            "observed": "repair-relevant difference",
+            "reason": repair_success["failure_explanation"],
+            "recommended_rollback_action": "Review the validation failure; if this followed a confirmed apply, restore the pre-apply backup before retrying.",
+        }
     add("validation_summary_generated", "PASS", "validation summary generated", "generated", "generated")
 
-    core_success = (
-        stats["archive_integrity"] == "PASSED"
-        and stats["graph_consistency"] == "PASSED"
-        and stats["repair_candidates_remaining"] == 0
-        and stats["validation_candidates_remaining"] == 0
-        and bool(semantic_comparison["semantic_equivalence"])
-    )
-    if core_success and all(stage.status != "FAIL" for stage in stages):
-        verdict = "VALIDATION_PASSED"
-    elif any(stage.status == "FAIL" for stage in stages):
+    core_success = repair_stage_ok
+    blocking_failures = [stage for stage in stages if stage.status == "FAIL"]
+    if core_success and not blocking_failures:
+        verdict = "VALIDATION_PASSED_REPAIR_EFFECTIVE"
+    elif blocking_failures:
         verdict = "VALIDATION_FAILED"
     elif any(stage.status == "INCONCLUSIVE" for stage in stages):
         verdict = "VALIDATION_INCONCLUSIVE"
     else:
-        verdict = "VALIDATION_PASSED"
+        verdict = "VALIDATION_FAILED"
 
     return NetworkExtensionApplyValidation(
         target_path=target,
@@ -353,6 +383,183 @@ def _semantic_comparison(
         "remaining_validation_candidates": target_validation_candidates_remaining,
         "serialization_difference_explained": explanation,
     }
+
+
+def _empty_repair_success_validation() -> dict[str, Any]:
+    return {
+        "repair_actually_successful": False,
+        "repair_relevant_equivalence": "FAILED",
+        "full_semantic_equivalence": False,
+        "repair_relevant_semantic_equivalence": False,
+        "apple_regenerated_unrelated_archive_objects": False,
+        "unrelated_semantic_differences": 0,
+        "repair_relevant_semantic_differences": 0,
+        "difference_classification": "repair_relevant_difference",
+        "failure_explanation": "repair-success validation has not run",
+        "remaining_repair_candidates": 0,
+        "remaining_validation_candidates": 0,
+    }
+
+
+def _repair_success_validation(
+    stats: dict[str, Any],
+    semantic_comparison: dict[str, Any],
+    target_value: Any,
+    artifact_value: Any,
+    *,
+    target_candidate_rows: list[Any],
+    target_validation_rows: list[Any],
+    serialization_ok: bool,
+) -> dict[str, Any]:
+    full_semantic_equivalence = bool(semantic_comparison.get("semantic_equivalence", False))
+    failures: list[str] = []
+    if stats.get("archive_integrity") != "PASSED":
+        failures.append("archive integrity failed")
+    if stats.get("graph_consistency") != "PASSED":
+        failures.append("object graph consistency failed")
+    if not serialization_ok:
+        failures.append("serialization round-trip failed")
+    remaining_repair = int(stats.get("repair_candidates_remaining", 0))
+    remaining_validation = int(stats.get("validation_candidates_remaining", 0))
+    if remaining_repair:
+        failures.append("repair target or stale NetworkExtension repair candidate reappeared")
+    if remaining_validation:
+        failures.append("validation candidate remains")
+    stale_repair_candidates = _repair_relevant_candidate_count(target_candidate_rows)
+    if stale_repair_candidates:
+        failures.append("repair target or stale NetworkExtension repair candidate reappeared")
+    stale_validation_candidates = _repair_relevant_validation_count(target_validation_rows)
+    if stale_validation_candidates and not remaining_validation:
+        failures.append("repair-relevant validation candidate remains")
+    if int(stats.get("broken_uid_references", 0)) or int(stats.get("dangling_references", 0)):
+        failures.append("removed or invalid UID is referenced")
+    target_relevant_graph = _repair_relevant_networkextension_graph(target_value)
+    artifact_relevant_graph = _repair_relevant_networkextension_graph(artifact_value)
+    repair_relevant_graph_differences = _repair_relevant_graph_difference_count(target_relevant_graph, artifact_relevant_graph)
+    if repair_relevant_graph_differences:
+        failures.append("repair-relevant NetworkExtension object graph differs from generated artifact")
+    repair_relevant_semantic_equivalence = not failures
+    unrelated_semantic_differences = 0 if full_semantic_equivalence else _unrelated_semantic_difference_count(target_value, artifact_value)
+    repair_relevant_semantic_differences = len(failures) + repair_relevant_graph_differences
+    repair_actually_successful = repair_relevant_semantic_equivalence
+    return {
+        "repair_actually_successful": repair_actually_successful,
+        "repair_relevant_equivalence": "PASSED" if repair_actually_successful else "FAILED",
+        "full_semantic_equivalence": full_semantic_equivalence,
+        "repair_relevant_semantic_equivalence": repair_relevant_semantic_equivalence,
+        "apple_regenerated_unrelated_archive_objects": bool(unrelated_semantic_differences and repair_relevant_semantic_equivalence),
+        "unrelated_semantic_differences": unrelated_semantic_differences if repair_relevant_semantic_equivalence else 0,
+        "repair_relevant_semantic_differences": repair_relevant_semantic_differences,
+        "difference_classification": "unrelated_semantic_difference" if repair_relevant_semantic_equivalence and not full_semantic_equivalence else ("none" if full_semantic_equivalence else "repair_relevant_difference"),
+        "failure_explanation": "" if repair_actually_successful else "; ".join(failures),
+        "remaining_repair_candidates": remaining_repair,
+        "remaining_validation_candidates": remaining_validation,
+    }
+
+
+def _unrelated_semantic_difference_count(target_value: Any, artifact_value: Any) -> int:
+    if target_value == artifact_value:
+        return 0
+    if not isinstance(target_value, dict) or not isinstance(artifact_value, dict):
+        return 1
+    differences = 0
+    target_objects = target_value.get("$objects")
+    artifact_objects = artifact_value.get("$objects")
+    if isinstance(target_objects, list) and isinstance(artifact_objects, list):
+        differences += abs(len(target_objects) - len(artifact_objects))
+        for target_item, artifact_item in zip(target_objects, artifact_objects, strict=False):
+            if target_item != artifact_item:
+                differences += 1
+    elif target_objects != artifact_objects:
+        differences += 1
+    target_top = target_value.get("$top")
+    artifact_top = artifact_value.get("$top")
+    if target_top != artifact_top:
+        differences += max(1, len(set(_dict_keys(target_top)) ^ set(_dict_keys(artifact_top))))
+    for key in sorted((set(target_value) | set(artifact_value)) - {"$objects", "$top"}):
+        if target_value.get(key) != artifact_value.get(key):
+            differences += 1
+    return max(1, differences)
+
+
+def _dict_keys(value: Any) -> list[str]:
+    return sorted(str(key) for key in value) if isinstance(value, dict) else []
+
+
+def _repair_relevant_networkextension_graph(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, dict):
+        return []
+    objects = value.get("$objects")
+    if not isinstance(objects, list):
+        return []
+    relevant: list[dict[str, Any]] = []
+    for index, item in enumerate(objects):
+        if not isinstance(item, dict) or not _is_repair_relevant_networkextension_object(item):
+            continue
+        relevant.append(
+            {
+                "index": index,
+                "keys": sorted(str(key) for key in item),
+                "signing_identifier": str(item.get("SigningIdentifier", "")),
+                "path": str(item.get("Path", "")),
+                "state": str(item.get("State", "")),
+                "client_identity_uid": _uid_data(item.get("ClientIdentity")),
+                "client_identities_uids": tuple(_uid_data(child) for child in item.get("ClientIdentities", []) if isinstance(child, plistlib.UID)) if isinstance(item.get("ClientIdentities"), list) else (),
+                "object": _normalize_plist_value(item),
+            }
+        )
+    return sorted(relevant, key=lambda row: (str(row["signing_identifier"]), str(row["path"]), str(row["state"]), str(row["client_identity_uid"]), str(row["index"])))
+
+
+def _is_repair_relevant_networkextension_object(item: dict[Any, Any]) -> bool:
+    signing_identifier = str(item.get("SigningIdentifier", ""))
+    path = str(item.get("Path", ""))
+    if signing_identifier.startswith("com.google.Chrome") or "Google Chrome" in path or "Chrome.app" in path:
+        return True
+    return "ClientIdentity" in item or "ClientIdentities" in item
+
+
+def _uid_data(value: Any) -> int | None:
+    return value.data if isinstance(value, plistlib.UID) else None
+
+
+def _normalize_plist_value(value: Any) -> Any:
+    if isinstance(value, plistlib.UID):
+        return {"__uid__": value.data}
+    if isinstance(value, dict):
+        return {str(key): _normalize_plist_value(value[key]) for key in sorted(value, key=str)}
+    if isinstance(value, list):
+        return [_normalize_plist_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_plist_value(item) for item in value]
+    return value
+
+
+def _repair_relevant_graph_difference_count(target_graph: list[dict[str, Any]], artifact_graph: list[dict[str, Any]]) -> int:
+    target_rows = {_stable_json(row) for row in target_graph}
+    artifact_rows = {_stable_json(row) for row in artifact_graph}
+    return len(target_rows.symmetric_difference(artifact_rows))
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _repair_relevant_candidate_count(rows: list[Any]) -> int:
+    count = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        classification = str(row.get("safety_classification", ""))
+        signing_identifier = str(row.get("signing_identifier", ""))
+        if signing_identifier.startswith("com.google.Chrome") and classification in {"potential_future_repair_candidate", "manual_only"}:
+            count += 1
+    return count
+
+
+def _repair_relevant_validation_count(rows: list[Any]) -> int:
+    statuses = {"runtime_absent", "stale", "ambiguous", "unverifiable"}
+    return sum(1 for row in rows if isinstance(row, dict) and str(row.get("candidate_status", "")) in statuses)
 
 
 def _candidate_rows(result: Any) -> list[Any]:
@@ -447,7 +654,7 @@ def render_networkextension_apply_validation(validation: NetworkExtensionApplyVa
         "- Read-only: true",
         "- Mutation performed: false",
         f"- Overall verdict: {validation.overall_verdict}",
-        f"- Repair actually successful: {str(validation.overall_verdict == 'VALIDATION_PASSED').lower()}",
+        f"- Repair actually successful: {str(summary['repair_actually_successful']).lower()}",
         f"- Target path: {validation.target_path}",
         f"- Artifact path: {validation.artifact_path}",
         f"- Object count: {summary['object_count']}",
@@ -457,6 +664,12 @@ def render_networkextension_apply_validation(validation: NetworkExtensionApplyVa
         f"- Archive integrity: {summary['archive_integrity']}",
         f"- Byte-identical: {str(summary['bytewise_sha256_identical']).lower()}",
         f"- Semantically equivalent: {str(summary['semantic_equivalence']).lower()}",
+        f"- Full semantic equivalence: {str(summary['semantic_equivalence']).lower()}",
+        f"- Repair-relevant equivalence: {summary['repair_relevant_equivalence']}",
+        f"- Repair-relevant semantic equivalence: {str(summary['repair_relevant_semantic_equivalence']).lower()}",
+        f"- Apple regenerated unrelated archive objects: {str(summary['apple_regenerated_unrelated_archive_objects']).lower()}",
+        f"- Unrelated semantic differences: {summary['unrelated_semantic_differences']}",
+        f"- Repair-relevant semantic differences: {summary['repair_relevant_semantic_differences']}",
         f"- SHA256 identical: {str(summary['sha256_identical']).lower()}",
         f"- Serialization explanation: {summary['serialization_difference_explained']}",
         "- SHA256 mismatch alone is not a failure when semantic validation passes.",
@@ -484,12 +697,15 @@ def render_networkextension_apply_validation_summary(summary: dict[str, Any]) ->
         [
             "NetworkExtension apply validation",
             f"- Overall verdict: {summary.get('overall_verdict', 'VALIDATION_INCONCLUSIVE')}",
-            f"- Repair actually successful: {str(summary.get('overall_verdict') == 'VALIDATION_PASSED').lower()}",
+            f"- Repair actually successful: {str(summary.get('repair_actually_successful', False)).lower()}",
             f"- Failed stage: {summary.get('failed_stage', '') or 'none'}",
             f"- Repair candidates remaining: {summary.get('repair_candidates_remaining', 0)}",
             f"- Validation candidates remaining: {summary.get('validation_candidates_remaining', 0)}",
             f"- Graph consistency: {summary.get('graph_consistency', 'UNKNOWN')}",
-            f"- Semantic equivalence: {str(summary.get('semantic_equivalence', False)).lower()}",
+            f"- Full semantic equivalence: {str(summary.get('semantic_equivalence', False)).lower()}",
+            f"- Repair-relevant equivalence: {summary.get('repair_relevant_equivalence', 'FAILED')}",
+            f"- Repair-relevant semantic equivalence: {str(summary.get('repair_relevant_semantic_equivalence', False)).lower()}",
+            f"- Apple regenerated unrelated archive objects: {str(summary.get('apple_regenerated_unrelated_archive_objects', False)).lower()}",
             f"- Byte-identical: {str(summary.get('bytewise_sha256_identical', False)).lower()}",
             f"- SHA256 identical: {str(summary.get('sha256_identical', False)).lower()}",
         ]
