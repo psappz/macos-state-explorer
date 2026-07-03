@@ -269,10 +269,15 @@ def networkextension_generate_repair_artifact_command(
         artifact = build_networkextension_repair_artifact(runbook, simulation, output, roots)
     except ValueError as error:
         raise typer.BadParameter(str(error)) from error
+    metadata_output = output.with_suffix(".json")
+    metadata_output.write_text(json_module.dumps(artifact.to_json_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     if json_output:
-        typer.echo(json_module.dumps(artifact.to_json_dict(), sort_keys=False))
+        payload = artifact.to_json_dict()
+        payload["metadata_sidecar_path"] = str(metadata_output)
+        typer.echo(json_module.dumps(payload, sort_keys=False))
     else:
         console.print(render_networkextension_repair_artifact(artifact), markup=False)
+        console.print(f"- Metadata sidecar: {metadata_output}", markup=False)
 
 
 @networkextension_app.command("apply-repair-artifact")
@@ -1574,11 +1579,23 @@ def _bundle_networkextension_repair_artifact_diff(before_report: dict[str, Any],
     }
 
 
+def _json_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
 def _bundle_networkextension_repair_apply_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("networkextension_repair_apply_summary")
     after_value = after_report.get("networkextension_repair_apply_summary")
     before = before_value if isinstance(before_value, dict) else {}
     after = after_value if isinstance(after_value, dict) else {}
+    before_blockers = set(_json_string_list(before.get("blockers", [])))
+    after_blockers = set(_json_string_list(after.get("blockers", [])))
+    before_details_value = before.get("blocker_details")
+    after_details_value = after.get("blocker_details")
+    before_details = before_details_value if isinstance(before_details_value, dict) else {}
+    after_details = after_details_value if isinstance(after_details_value, dict) else {}
     return {
         "status_before": str(before.get("final_status", "DRY_RUN")),
         "status_after": str(after.get("final_status", "DRY_RUN")),
@@ -1588,6 +1605,19 @@ def _bundle_networkextension_repair_apply_diff(before_report: dict[str, Any], af
         "backup_created_after": bool(after.get("backup_created", False)),
         "target_path_before": str(before.get("target_path", "")),
         "target_path_after": str(after.get("target_path", "")),
+        "metadata_status_before": str(before.get("metadata_status", "UNKNOWN")),
+        "metadata_status_after": str(after.get("metadata_status", "UNKNOWN")),
+        "preflight_status_before": str(before.get("preflight_status", "BLOCKED")),
+        "preflight_status_after": str(after.get("preflight_status", "BLOCKED")),
+        "added_blockers": sorted(after_blockers - before_blockers),
+        "removed_blockers": sorted(before_blockers - after_blockers),
+        "changed_blocker_details": sorted(code for code in before_blockers & after_blockers if before_details.get(code) != after_details.get(code)),
+        "sha_mismatch_details_before": before_details.get("source_sha256_mismatch", {}),
+        "sha_mismatch_details_after": after_details.get("source_sha256_mismatch", {}),
+        "expected_source_sha256_before": str(before.get("expected_source_sha256", "")),
+        "expected_source_sha256_after": str(after.get("expected_source_sha256", "")),
+        "actual_source_sha256_before": str(before.get("actual_source_sha256", "")),
+        "actual_source_sha256_after": str(after.get("actual_source_sha256", "")),
     }
 
 
@@ -1830,6 +1860,9 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Mutation performed: {str(networkextension_repair_apply.get('mutation_performed_before', False)).lower()} → {str(networkextension_repair_apply.get('mutation_performed_after', False)).lower()}",
         f"- Backup created: {str(networkextension_repair_apply.get('backup_created_before', False)).lower()} → {str(networkextension_repair_apply.get('backup_created_after', False)).lower()}",
         f"- Target path: {networkextension_repair_apply.get('target_path_after', '') or 'none'}",
+        f"- Added blockers: {', '.join(networkextension_repair_apply.get('added_blockers', [])) if networkextension_repair_apply.get('added_blockers') else 'none'}",
+        f"- Removed blockers: {', '.join(networkextension_repair_apply.get('removed_blockers', [])) if networkextension_repair_apply.get('removed_blockers') else 'none'}",
+        f"- SHA mismatch: expected {networkextension_repair_apply.get('expected_source_sha256_after', '') or 'none'}, actual {networkextension_repair_apply.get('actual_source_sha256_after', '') or 'none'}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",
