@@ -219,4 +219,20 @@ For every preview group the package records:
 
 The transaction package does not edit plists, delete records, reset services, execute repair, change solver/planner/ranking/confidence behavior, or mutate the system. Support bundles include `networkextension-repair-transaction-package.json` and `networkextension-repair-transaction-package.txt`, and bundle diffs include `NetworkExtension Repair Transaction Package Diff` for transaction additions/removals, validation status changes, and backup/rollback deltas.
 
+## NetworkExtension manual repair runbook
+
+`mse networkextension manual-repair-runbook` is the first mutation-capable design artifact, but macos-state-explorer itself remains completely read-only. The command consumes the previous NetworkExtension evidence layers—identity correlation, raw references, object graph decoding, repair candidates, runtime validation, repair-plan preview, and repair transaction package—and emits a deterministic operator specification for a future experienced macOS engineer to review.
+
+For every transaction the runbook records:
+
+- transaction ID, source artifact, SHA256, parent object, candidate object refs, SigningIdentifier, validation status, and executable path class
+- repair class and expected manual mutation semantics: object removal, object rewrite, UID rewiring, array changes, dictionary changes, and object-count delta
+- objects that must remain untouched, objects requiring reindexing, objects requiring UID remapping, and objects requiring archive regeneration
+- affected object graph details: object index/class, parent chain, referenced UIDs, referencing objects, dictionary keys, array memberships, incoming/outgoing references, dependency graph, deletion independence, and graph-rewrite requirement
+- safety analysis for single-object deletion, dictionary update, array compaction, UID rewrite, archive rebuild, multiple object removal, cross-reference update, and complete archive regeneration
+- repair difficulty (`trivial`, `low`, `medium`, `high`, or `unsafe`) with deterministic explanation
+- failure modes, rollback requirements, verification commands, and expected verification outcome
+
+The runbook never writes plists, never edits NSKeyedArchiver archives, never deletes objects, never rewires UIDs, never compacts arrays, never rebuilds archives, never executes repair, and never recommends automatic execution. It is generated documentation only. Support bundles include `networkextension-manual-repair-runbook.json` and `networkextension-manual-repair-runbook.txt`, and bundle diffs include `NetworkExtension Manual Repair Runbook Diff` for runbook additions/removals, difficulty changes, transaction deltas, and archive-regeneration deltas.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.

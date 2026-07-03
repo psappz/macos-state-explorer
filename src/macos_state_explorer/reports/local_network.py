@@ -25,6 +25,7 @@ from macos_state_explorer.networkextension_raw_references import build_networkex
 from macos_state_explorer.networkextension_repair_candidates import build_networkextension_repair_candidates, networkextension_repair_candidates_summary, render_networkextension_repair_candidates, render_networkextension_repair_candidates_summary
 from macos_state_explorer.networkextension_repair_plan_preview import build_networkextension_repair_plan_preview, networkextension_repair_plan_preview_summary, render_networkextension_repair_plan_preview, render_networkextension_repair_plan_preview_summary
 from macos_state_explorer.networkextension_repair_transaction_package import build_networkextension_repair_transaction_package, networkextension_repair_transaction_package_summary, render_networkextension_repair_transaction_package, render_networkextension_repair_transaction_package_summary
+from macos_state_explorer.networkextension_manual_repair_runbook import build_networkextension_manual_repair_runbook, networkextension_manual_repair_runbook_summary, render_networkextension_manual_repair_runbook, render_networkextension_manual_repair_runbook_summary
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, networkextension_state_summary, render_networkextension_state, render_networkextension_state_summary
 from macos_state_explorer.solver.local_network import LocalNetworkSolution, build_local_network_solution
 from macos_state_explorer.trace_correlation import build_trace_correlation_evidence, render_trace_correlation_evidence, render_trace_correlation_summary
@@ -78,6 +79,7 @@ class LocalNetworkReport:
         payload["networkextension_candidate_validation_summary"] = networkextension_candidate_validation_summary(_report_networkextension_candidate_validation(self))
         payload["networkextension_repair_plan_preview_summary"] = networkextension_repair_plan_preview_summary(_report_networkextension_repair_plan_preview(self))
         payload["networkextension_repair_transaction_package_summary"] = networkextension_repair_transaction_package_summary(_report_networkextension_repair_transaction_package(self))
+        payload["networkextension_manual_repair_runbook_summary"] = networkextension_manual_repair_runbook_summary(_report_networkextension_manual_repair_runbook(self))
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -161,6 +163,8 @@ class LocalNetworkReport:
             lines.extend(["", render_networkextension_repair_plan_preview_summary(payload["networkextension_repair_plan_preview_summary"])])
         if payload.get("networkextension_repair_transaction_package_summary"):
             lines.extend(["", render_networkextension_repair_transaction_package_summary(payload["networkextension_repair_transaction_package_summary"])])
+        if payload.get("networkextension_manual_repair_runbook_summary"):
+            lines.extend(["", render_networkextension_manual_repair_runbook_summary(payload["networkextension_manual_repair_runbook_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -286,6 +290,9 @@ def write_local_network_support_bundle(
     networkextension_repair_transaction_package = build_networkextension_repair_transaction_package(networkextension_repair_plan_preview, default_networkextension_roots())
     (bundle / "networkextension-repair-transaction-package.json").write_text(json.dumps(networkextension_repair_transaction_package.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "networkextension-repair-transaction-package.txt").write_text(render_networkextension_repair_transaction_package(networkextension_repair_transaction_package) + "\n")
+    networkextension_manual_repair_runbook = build_networkextension_manual_repair_runbook(networkextension_repair_transaction_package, default_networkextension_roots())
+    (bundle / "networkextension-manual-repair-runbook.json").write_text(json.dumps(networkextension_manual_repair_runbook.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "networkextension-manual-repair-runbook.txt").write_text(render_networkextension_manual_repair_runbook(networkextension_manual_repair_runbook) + "\n")
     return bundle
 
 
@@ -366,6 +373,10 @@ def _report_networkextension_repair_plan_preview(report: LocalNetworkReport):
 
 def _report_networkextension_repair_transaction_package(report: LocalNetworkReport):
     return build_networkextension_repair_transaction_package(_report_networkextension_repair_plan_preview(report), default_networkextension_roots())
+
+
+def _report_networkextension_manual_repair_runbook(report: LocalNetworkReport):
+    return build_networkextension_manual_repair_runbook(_report_networkextension_repair_transaction_package(report), default_networkextension_roots())
 
 
 def _report_networkextension_correlation(report: LocalNetworkReport):
