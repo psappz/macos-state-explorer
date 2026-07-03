@@ -59,6 +59,14 @@ def generated_repaired_artifact(tmp_path: Path) -> dict[str, Path]:
     return {"root": fixture["root"], "source": fixture["source"], "artifact": artifact_path, "metadata": metadata}
 
 
+def _reverse_dictionary_order(value):
+    if isinstance(value, dict):
+        return {key: _reverse_dictionary_order(value[key]) for key in reversed(list(value))}
+    if isinstance(value, list):
+        return [_reverse_dictionary_order(item) for item in value]
+    return value
+
+
 def test_apply_validation_passes_for_target_identical_to_generated_artifact(tmp_path):
     fixture = generated_repaired_artifact(tmp_path)
     fixture["source"].write_bytes(fixture["artifact"].read_bytes())
@@ -89,6 +97,88 @@ def test_apply_validation_passes_for_target_identical_to_generated_artifact(tmp_
     assert payload["hash_comparison"]["sha256_identical"] is True
     assert payload["hash_comparison"]["serialization_identical"] is True
     assert payload["hash_comparison"]["object_graph_identical"] is True
+    assert payload["semantic_comparison"]["bytewise_sha256_identical"] is True
+    assert payload["semantic_comparison"]["semantic_equivalence"] is True
+    assert payload["semantic_comparison"]["serialization_difference_explained"] == "byte_identical"
+
+
+def test_apply_validation_passes_when_bytewise_mismatch_is_semantically_equivalent(tmp_path):
+    fixture = generated_repaired_artifact(tmp_path)
+    semantic_value = plistlib.loads(fixture["artifact"].read_bytes())
+    fixture["source"].write_bytes(plistlib.dumps(_reverse_dictionary_order(semantic_value), fmt=plistlib.FMT_BINARY, sort_keys=False))
+
+    payload = validate_networkextension_apply(fixture["source"], fixture["artifact"], metadata_path=fixture["metadata"]).to_json_dict()
+
+    assert payload["overall_verdict"] == "VALIDATION_PASSED"
+    assert payload["hash_comparison"]["sha256_identical"] is False
+    assert payload["semantic_comparison"] == {
+        "bytewise_sha256_identical": False,
+        "semantic_equivalence": True,
+        "object_graph_equivalent": True,
+        "uid_reference_graph_equivalent": True,
+        "dictionary_bindings_equivalent": True,
+        "repair_candidates_equivalent": True,
+        "validation_candidates_equivalent": True,
+        "remaining_repair_candidates": 0,
+        "remaining_validation_candidates": 0,
+        "serialization_difference_explained": "bytewise serialization differs, but decoded NSKeyedArchiver semantics are equivalent",
+    }
+    assert all(stage["status"] == "PASS" for stage in payload["validation_stages"])
+
+
+def test_apply_validation_fails_when_semantic_structure_differs(tmp_path):
+    fixture = generated_repaired_artifact(tmp_path)
+    live_value = plistlib.loads(fixture["artifact"].read_bytes())
+    live_value["$objects"].append({"SigningIdentifier": "com.example.SemanticDrift", "Path": "/missing"})
+    fixture["source"].write_bytes(plistlib.dumps(live_value, fmt=plistlib.FMT_BINARY, sort_keys=True))
+
+    payload = validate_networkextension_apply(fixture["source"], fixture["artifact"], metadata_path=fixture["metadata"]).to_json_dict()
+
+    assert payload["overall_verdict"] == "VALIDATION_FAILED"
+    assert payload["semantic_comparison"]["semantic_equivalence"] is False
+    assert payload["semantic_comparison"]["object_graph_equivalent"] is False
+    assert payload["failure"]["stage"] == "semantic_equivalence_with_generated_artifact"
+
+
+def test_apply_validation_fails_when_validation_candidates_remain(tmp_path, monkeypatch):
+    fixture = generated_repaired_artifact(tmp_path)
+    semantic_value = plistlib.loads(fixture["artifact"].read_bytes())
+    fixture["source"].write_bytes(plistlib.dumps(_reverse_dictionary_order(semantic_value), fmt=plistlib.FMT_BINARY, sort_keys=False))
+
+    original = build_networkextension_candidate_validation
+
+    class ValidationWithRemaining:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def summary(self):
+            payload = dict(self.wrapped.summary())
+            payload["total_candidates"] = 1
+            return payload
+
+        def to_json_dict(self):
+            payload = self.wrapped.to_json_dict()
+            payload["validations"] = [
+                {
+                    "object_ref": "$objects[4]",
+                    "signing_identifier": "com.google.Chrome",
+                    "executable_path": "/missing",
+                    "candidate_status": "stale",
+                }
+            ]
+            return payload
+
+    def fake_validation(paths, *, process_rows=None):
+        return ValidationWithRemaining(original(paths, process_rows=process_rows))
+
+    monkeypatch.setattr("macos_state_explorer.networkextension_apply_validation.build_networkextension_candidate_validation", fake_validation)
+
+    payload = validate_networkextension_apply(fixture["source"], fixture["artifact"], metadata_path=fixture["metadata"]).to_json_dict()
+
+    assert payload["overall_verdict"] == "VALIDATION_FAILED"
+    assert payload["failure"]["stage"] == "validation_candidates_zero"
+    assert payload["statistics"]["validation_candidates_remaining"] == 1
+    assert payload["semantic_comparison"]["remaining_validation_candidates"] == 1
 
 
 def test_apply_validation_reports_failure_stage_and_rollback_guidance(tmp_path):
@@ -100,9 +190,9 @@ def test_apply_validation_reports_failure_stage_and_rollback_guidance(tmp_path):
 
     assert payload["overall_verdict"] == "VALIDATION_FAILED"
     assert payload["mutation_performed"] is False
-    assert payload["failure"]["stage"] == "compare_repaired_with_generated_artifact"
-    assert payload["failure"]["expected"] == "identical"
-    assert payload["failure"]["observed"] == "different"
+    assert payload["failure"]["stage"] == "semantic_equivalence_with_generated_artifact"
+    assert payload["failure"]["expected"] == "semantically equivalent"
+    assert payload["failure"]["observed"] == "different semantics"
     assert "restore the pre-apply backup" in payload["failure"]["recommended_rollback_action"]
     assert fixture["source"].read_bytes() == target_before
     assert fixture["artifact"].read_bytes() == artifact_before
@@ -123,6 +213,19 @@ def test_apply_validation_detects_broken_uid_references(tmp_path):
     assert payload["statistics"]["graph_consistency"] == "FAILED"
 
 
+def test_apply_validation_malformed_archive_fails_before_semantic_success(tmp_path):
+    artifact = tmp_path / "artifact.plist"
+    target = tmp_path / "target.plist"
+    target.write_text("not a plist", encoding="utf-8")
+    artifact.write_bytes(plistlib.dumps({"$archiver": "NSKeyedArchiver", "$version": 100000, "$top": {"root": plistlib.UID(0)}, "$objects": ["$null"]}, fmt=plistlib.FMT_BINARY, sort_keys=True))
+
+    payload = validate_networkextension_apply(target, artifact).to_json_dict()
+
+    assert payload["overall_verdict"] == "VALIDATION_FAILED"
+    assert payload["failure"]["stage"] == "target_plist_readable"
+    assert payload["semantic_comparison"]["semantic_equivalence"] is False
+
+
 def test_apply_validation_cli_text_and_json(tmp_path):
     fixture = generated_repaired_artifact(tmp_path)
     fixture["source"].write_bytes(fixture["artifact"].read_bytes())
@@ -132,12 +235,16 @@ def test_apply_validation_cli_text_and_json(tmp_path):
     payload = json.loads(json_result.stdout)
     assert payload["overall_verdict"] == "VALIDATION_PASSED"
     assert payload["statistics"]["object_count"] > 0
+    assert payload["semantic_comparison"]["semantic_equivalence"] is True
 
     text_result = CliRunner().invoke(app, ["networkextension", "apply-validation", "--target", str(fixture["source"]), "--artifact", str(fixture["artifact"]), "--metadata", str(fixture["metadata"])])
     assert text_result.exit_code == 0
     assert "NetworkExtension apply validation" in text_result.stdout
     assert "Overall verdict: VALIDATION_PASSED" in text_result.stdout
     assert "repair_candidates_zero: PASS" in text_result.stdout
+    assert "Byte-identical:" in text_result.stdout
+    assert "Semantically equivalent:" in text_result.stdout
+    assert "SHA256 mismatch alone is not a failure when semantic validation passes." in text_result.stdout
 
 
 def test_apply_validation_report_bundle_and_diff(monkeypatch, tmp_path):
@@ -159,13 +266,17 @@ def test_apply_validation_report_bundle_and_diff(monkeypatch, tmp_path):
     after = tmp_path / "after"
     before.mkdir()
     after.mkdir()
-    (before / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "networkextension_apply_validation_summary": {"overall_verdict": "VALIDATION_FAILED", "repair_candidates_remaining": 2, "target_sha256": "old", "artifact_sha256": "new", "graph_consistency": "FAILED"}}))
-    (after / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "networkextension_apply_validation_summary": {"overall_verdict": "VALIDATION_PASSED", "repair_candidates_remaining": 0, "target_sha256": "same", "artifact_sha256": "same", "graph_consistency": "PASSED"}}))
+    (before / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "networkextension_apply_validation_summary": {"overall_verdict": "VALIDATION_FAILED", "repair_candidates_remaining": 2, "target_sha256": "old", "artifact_sha256": "new", "graph_consistency": "FAILED", "semantic_equivalence": False, "bytewise_sha256_identical": False, "serialization_difference_explained": "semantic mismatch"}}))
+    (after / "report.json").write_text(json.dumps({"command": "report local-network", "evidence": [], "networkextension_apply_validation_summary": {"overall_verdict": "VALIDATION_PASSED", "repair_candidates_remaining": 0, "target_sha256": "same", "artifact_sha256": "same", "graph_consistency": "PASSED", "semantic_equivalence": True, "bytewise_sha256_identical": False, "serialization_difference_explained": "bytewise serialization differs, but decoded NSKeyedArchiver semantics are equivalent"}}))
 
     diff = json.loads(CliRunner().invoke(app, ["diff", "bundles", str(before), str(after), "--json"]).stdout)
     assert diff["networkextension_apply_validation_diff"]["verdict_before"] == "VALIDATION_FAILED"
     assert diff["networkextension_apply_validation_diff"]["verdict_after"] == "VALIDATION_PASSED"
     assert diff["networkextension_apply_validation_diff"]["repair_candidates_remaining_delta"] == -2
+    assert diff["networkextension_apply_validation_diff"]["semantic_equivalence_before"] is False
+    assert diff["networkextension_apply_validation_diff"]["semantic_equivalence_after"] is True
+    assert diff["networkextension_apply_validation_diff"]["serialization_difference_explained_after"] == "bytewise serialization differs, but decoded NSKeyedArchiver semantics are equivalent"
     rendered = CliRunner().invoke(app, ["diff", "bundles", str(before), str(after)]).stdout
     assert "NetworkExtension Apply Validation Diff" in rendered
     assert "Validation result: VALIDATION_FAILED → VALIDATION_PASSED" in rendered
+    assert "Semantic equivalence: false → true" in rendered
