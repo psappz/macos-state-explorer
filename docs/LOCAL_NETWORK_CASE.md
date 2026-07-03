@@ -235,4 +235,22 @@ For every transaction the runbook records:
 
 The runbook never writes plists, never edits NSKeyedArchiver archives, never deletes objects, never rewires UIDs, never compacts arrays, never rebuilds archives, never executes repair, and never recommends automatic execution. It is generated documentation only. Support bundles include `networkextension-manual-repair-runbook.json` and `networkextension-manual-repair-runbook.txt`, and bundle diffs include `NetworkExtension Manual Repair Runbook Diff` for runbook additions/removals, difficulty changes, transaction deltas, and archive-regeneration deltas.
 
+## NetworkExtension repair simulation
+
+`mse networkextension repair-simulation` is still strictly read-only. It consumes the manual repair runbook / transaction-package data and simulates the planned object removals against an in-memory temporary copy of the affected NSKeyedArchiver plist. It does not write back to the system artifact.
+
+The simulation performs the same categories that a future human-reviewed repair would need to reason about:
+
+- planned `$objects[...]` removal for the stale transaction records
+- deterministic `plistlib.UID` remapping after object compaction
+- array compaction when removed UIDs disappear from array members
+- dictionary cleanup when dictionary values point at removed UIDs
+- binary plist reserialization of the temporary copy
+- re-parse validation of the serialized temporary copy
+- fresh object-graph, candidate-validation, and repair-plan evaluation against the simulated result
+
+The JSON contract deliberately records `read_only: true`, `mutation_performed: false`, `system_artifact_modified: false`, `executable_by_tool: false`, and `automatic_execution_recommendation: "never"`. Safety verdicts are limited to `simulation_passed`, `simulation_failed`, and `simulation_inconclusive`; none of them authorizes automatic repair.
+
+The command does not modify real files, delete objects from the live plist, reset services, change diagnosis, change ranking, change confidence, change solver behavior, change repair execution behavior, or alter LaunchServices behavior. Support bundles include `networkextension-repair-simulation.json` and `networkextension-repair-simulation.txt`, and bundle diffs include `NetworkExtension Repair Simulation Diff`.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.
