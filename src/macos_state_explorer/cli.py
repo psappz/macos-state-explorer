@@ -1671,7 +1671,24 @@ def _bundle_networkextension_apply_validation_diff(before_report: dict[str, Any]
         "serialization_difference_explained_after": str(after.get("serialization_difference_explained", "")),
         "object_graph_identical_before": bool(before.get("object_graph_identical", False)),
         "object_graph_identical_after": bool(after.get("object_graph_identical", False)),
+        "semantic_difference_ids_added": sorted(set(_semantic_difference_ids(after)) - set(_semantic_difference_ids(before))),
+        "semantic_difference_ids_removed": sorted(set(_semantic_difference_ids(before)) - set(_semantic_difference_ids(after))),
+        "semantic_difference_classifications_after": _semantic_difference_classifications(after),
     }
+
+
+def _semantic_difference_ids(summary: dict[str, Any]) -> list[str]:
+    entries = summary.get("repair_relevant_semantic_difference_entries")
+    if not isinstance(entries, list):
+        return []
+    return sorted(str(entry.get("id", "")) for entry in entries if isinstance(entry, dict) and entry.get("id"))
+
+
+def _semantic_difference_classifications(summary: dict[str, Any]) -> list[str]:
+    entries = summary.get("repair_relevant_semantic_difference_entries")
+    if not isinstance(entries, list):
+        return []
+    return sorted({str(entry.get("classification", "unknown_repair_relevant_difference")) for entry in entries if isinstance(entry, dict)})
 
 
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
@@ -1932,6 +1949,8 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Repair-relevant semantic differences: {networkextension_apply_validation.get('repair_relevant_semantic_differences_delta', 0):+d}",
         f"- Byte-identical: {str(networkextension_apply_validation.get('bytewise_sha256_identical_before', False)).lower()} → {str(networkextension_apply_validation.get('bytewise_sha256_identical_after', False)).lower()}",
         f"- Serialization explanation: {networkextension_apply_validation.get('serialization_difference_explained_after', '') or 'none'}",
+        f"- Semantic difference IDs added: {', '.join(networkextension_apply_validation.get('semantic_difference_ids_added', [])) if networkextension_apply_validation.get('semantic_difference_ids_added') else 'none'}",
+        f"- Semantic difference classifications: {', '.join(networkextension_apply_validation.get('semantic_difference_classifications_after', [])) if networkextension_apply_validation.get('semantic_difference_classifications_after') else 'none'}",
         f"- Graph consistency: {networkextension_apply_validation.get('graph_consistency_before', 'UNKNOWN')} → {networkextension_apply_validation.get('graph_consistency_after', 'UNKNOWN')}",
         "",
         "Trace Correlation Diff",

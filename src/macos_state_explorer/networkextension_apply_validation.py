@@ -86,8 +86,9 @@ class NetworkExtensionApplyValidation:
             "statistics": self.statistics,
             "hash_comparison": self.hash_comparison,
             "failure": self.failure,
-            "semantic_comparison": {key: value for key, value in self.semantic_comparison.items() if key != "repair_success_validation"},
-            "repair_success_validation": self.semantic_comparison.get("repair_success_validation", _empty_repair_success_validation()),
+            "semantic_comparison": {key: value for key, value in self.semantic_comparison.items() if key not in {"repair_success_validation", "repair_relevant_semantic_difference_entries"}},
+            "repair_success_validation": _public_repair_success_validation(self.semantic_comparison.get("repair_success_validation", _empty_repair_success_validation())),
+            "repair_relevant_semantic_differences": self.semantic_comparison.get("repair_relevant_semantic_difference_entries", []),
         }
 
     def summary(self) -> dict[str, Any]:
@@ -121,6 +122,7 @@ class NetworkExtensionApplyValidation:
             "repair_candidates_equivalent": bool(self.semantic_comparison.get("repair_candidates_equivalent", False)),
             "validation_candidates_equivalent": bool(self.semantic_comparison.get("validation_candidates_equivalent", False)),
             "serialization_difference_explained": str(self.semantic_comparison.get("serialization_difference_explained", "not_compared")),
+            "repair_relevant_semantic_difference_entries": self.semantic_comparison.get("repair_relevant_semantic_difference_entries", []),
             "serialization_identical": bool(self.hash_comparison.get("serialization_identical", False)),
             "object_graph_identical": bool(self.hash_comparison.get("object_graph_identical", False)),
             "read_only": True,
@@ -277,6 +279,7 @@ def validate_networkextension_apply(
         serialization_ok=serialization_ok,
     )
     semantic_comparison["repair_success_validation"] = repair_success
+    semantic_comparison["repair_relevant_semantic_difference_entries"] = repair_success["semantic_difference_entries"]
     repair_stage_ok = bool(repair_success["repair_actually_successful"])
     add(
         "repair_success_validation",
@@ -335,6 +338,7 @@ def _empty_semantic_comparison() -> dict[str, Any]:
         "remaining_repair_candidates": 0,
         "remaining_validation_candidates": 0,
         "serialization_difference_explained": "not_compared",
+        "repair_relevant_semantic_difference_entries": [],
     }
 
 
@@ -401,6 +405,10 @@ def _empty_repair_success_validation() -> dict[str, Any]:
     }
 
 
+def _public_repair_success_validation(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: child for key, child in value.items() if key != "semantic_difference_entries"}
+
+
 def _repair_success_validation(
     stats: dict[str, Any],
     semantic_comparison: dict[str, Any],
@@ -433,15 +441,15 @@ def _repair_success_validation(
         failures.append("repair-relevant validation candidate remains")
     if int(stats.get("broken_uid_references", 0)) or int(stats.get("dangling_references", 0)):
         failures.append("removed or invalid UID is referenced")
-    target_relevant_graph = _repair_relevant_networkextension_graph(target_value)
-    artifact_relevant_graph = _repair_relevant_networkextension_graph(artifact_value)
-    repair_relevant_graph_differences = _repair_relevant_graph_difference_count(target_relevant_graph, artifact_relevant_graph)
-    if repair_relevant_graph_differences:
+    semantic_difference_entries = _semantic_difference_entries(target_value, artifact_value)
+    blocking_difference_count = sum(1 for entry in semantic_difference_entries if bool(entry.get("blocks_repair_success", False)))
+    if blocking_difference_count:
         failures.append("repair-relevant NetworkExtension object graph differs from generated artifact")
-    repair_relevant_semantic_equivalence = not failures
+    repair_relevant_semantic_equivalence = not failures and blocking_difference_count == 0
     unrelated_semantic_differences = 0 if full_semantic_equivalence else _unrelated_semantic_difference_count(target_value, artifact_value)
-    repair_relevant_semantic_differences = len(failures) + repair_relevant_graph_differences
+    repair_relevant_semantic_differences = blocking_difference_count + max(0, len(failures) - (1 if blocking_difference_count else 0))
     repair_actually_successful = repair_relevant_semantic_equivalence
+    classification = _overall_difference_classification(semantic_difference_entries, full_semantic_equivalence, repair_actually_successful)
     return {
         "repair_actually_successful": repair_actually_successful,
         "repair_relevant_equivalence": "PASSED" if repair_actually_successful else "FAILED",
@@ -450,11 +458,173 @@ def _repair_success_validation(
         "apple_regenerated_unrelated_archive_objects": bool(unrelated_semantic_differences and repair_relevant_semantic_equivalence),
         "unrelated_semantic_differences": unrelated_semantic_differences if repair_relevant_semantic_equivalence else 0,
         "repair_relevant_semantic_differences": repair_relevant_semantic_differences,
-        "difference_classification": "unrelated_semantic_difference" if repair_relevant_semantic_equivalence and not full_semantic_equivalence else ("none" if full_semantic_equivalence else "repair_relevant_difference"),
+        "difference_classification": classification,
+        "semantic_difference_entries": semantic_difference_entries,
         "failure_explanation": "" if repair_actually_successful else "; ".join(failures),
         "remaining_repair_candidates": remaining_repair,
         "remaining_validation_candidates": remaining_validation,
     }
+
+
+def _semantic_difference_entries(target_value: Any, artifact_value: Any) -> list[dict[str, Any]]:
+    target_objects = target_value.get("$objects") if isinstance(target_value, dict) else None
+    artifact_objects = artifact_value.get("$objects") if isinstance(artifact_value, dict) else None
+    if not isinstance(target_objects, list) or not isinstance(artifact_objects, list):
+        if target_value == artifact_value:
+            return []
+        return [
+            _semantic_difference_entry(
+                1,
+                object_ref="$",
+                object_path="$",
+                semantic_path="$",
+                parent_chain="$",
+                expected=artifact_value,
+                actual=target_value,
+                classification="validation_model_gap",
+                explanation="Validation could not compare NSKeyedArchiver object arrays; archive structure differs outside the repair-relevant object model.",
+                blocks=True,
+                suggested="Do not mark repair successful; inspect the archive structure and validation model before retrying.",
+            )
+        ]
+
+    entries: list[dict[str, Any]] = []
+    next_id = 1
+    max_len = max(len(target_objects), len(artifact_objects))
+    for index in range(max_len):
+        target_present = index < len(target_objects)
+        artifact_present = index < len(artifact_objects)
+        target_item = target_objects[index] if target_present else None
+        artifact_item = artifact_objects[index] if artifact_present else None
+        if target_item == artifact_item:
+            continue
+        target_relevant = isinstance(target_item, dict) and _is_repair_relevant_networkextension_object(target_item)
+        artifact_relevant = isinstance(artifact_item, dict) and _is_repair_relevant_networkextension_object(artifact_item)
+        if target_relevant or artifact_relevant:
+            if isinstance(target_item, dict) and isinstance(artifact_item, dict):
+                for path_key, expected, actual in _first_repair_relevant_field_diffs(artifact_item, target_item):
+                    entries.append(
+                        _semantic_difference_entry(
+                            next_id,
+                            object_ref=f"$objects[{index}]",
+                            object_path=f"$objects[{index}]",
+                            semantic_path=f"$objects[{index}].{path_key}" if path_key else f"$objects[{index}]",
+                            parent_chain=f"$objects[{index}]",
+                            expected=expected,
+                            actual=actual,
+                            classification="true_repair_difference",
+                            explanation=f"Repair-relevant NetworkExtension object differs from generated artifact at {path_key or 'object'}; this may mean the installed target no longer matches the repaired identity graph.",
+                            blocks=True,
+                            suggested="Do not mark repair successful; inspect this object path and restore the pre-apply backup if this followed a confirmed apply.",
+                        )
+                    )
+                    next_id += 1
+                continue
+            entries.append(
+                _semantic_difference_entry(
+                    next_id,
+                    object_ref=f"$objects[{index}]",
+                    object_path=f"$objects[{index}]",
+                    semantic_path=f"$objects[{index}]",
+                    parent_chain="$objects",
+                    expected=artifact_item if artifact_present else "missing",
+                    actual=target_item if target_present else "missing",
+                    classification="unknown_repair_relevant_difference",
+                    explanation="Repair-relevant NetworkExtension object presence differs between target and generated artifact.",
+                    blocks=True,
+                    suggested="Do not mark repair successful; inspect this object and restore the pre-apply backup if this followed a confirmed apply.",
+                )
+            )
+            next_id += 1
+        else:
+            classification = "benign_archive_regeneration" if target_present and not artifact_present and _looks_like_apple_regenerated_archive_object(target_item) else "unrelated_semantic_difference"
+            entries.append(
+                _semantic_difference_entry(
+                    next_id,
+                    object_ref=f"$objects[{index}]",
+                    object_path=f"$objects[{index}]",
+                    semantic_path=f"$objects[{index}]",
+                    parent_chain="$objects",
+                    expected=artifact_item if artifact_present else "missing",
+                    actual=target_item if target_present else "missing",
+                    classification=classification,
+                    explanation="Target contains an additional non-repair NetworkExtension archive object; repair-relevant objects still match the generated artifact." if classification == "benign_archive_regeneration" else "Decoded archive semantics differ outside repair-relevant NetworkExtension objects.",
+                    blocks=False,
+                    suggested="No repair rollback required; keep SHA256/full semantic mismatch as diagnostic context.",
+                )
+            )
+            next_id += 1
+    return entries
+
+
+def _semantic_difference_entry(
+    number: int,
+    *,
+    object_ref: str,
+    object_path: str,
+    semantic_path: str,
+    parent_chain: str,
+    expected: Any,
+    actual: Any,
+    classification: str,
+    explanation: str,
+    blocks: bool,
+    suggested: str,
+) -> dict[str, Any]:
+    return {
+        "id": f"ne-semantic-diff-{number:04d}",
+        "object_ref": object_ref,
+        "object_path": object_path,
+        "semantic_path": semantic_path,
+        "parent_chain": parent_chain,
+        "expected_generated_value_summary": _value_summary(expected),
+        "actual_target_value_summary": _value_summary(actual),
+        "classification": classification,
+        "explanation": explanation,
+        "blocks_repair_success": blocks,
+        "suggested_next_action": suggested,
+    }
+
+
+def _first_repair_relevant_field_diffs(expected: dict[Any, Any], actual: dict[Any, Any]) -> list[tuple[str, Any, Any]]:
+    diffs: list[tuple[str, Any, Any]] = []
+    for key in sorted(set(expected) | set(actual), key=str):
+        expected_value = expected.get(key, "missing")
+        actual_value = actual.get(key, "missing")
+        if _normalize_plist_value(expected_value) != _normalize_plist_value(actual_value):
+            diffs.append((str(key), expected_value, actual_value))
+    return diffs or [("", expected, actual)]
+
+
+def _value_summary(value: Any) -> str:
+    if value == "missing":
+        return "missing"
+    if isinstance(value, plistlib.UID):
+        return f"UID:{value.data}"
+    if isinstance(value, dict):
+        keys = ",".join(sorted(str(key) for key in value))
+        return f"dict(keys={keys})"
+    if isinstance(value, list):
+        return f"list(len={len(value)})"
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return str(value)
+    return type(value).__name__
+
+
+def _looks_like_apple_regenerated_archive_object(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return any(str(key).startswith("Apple") or str(key) in {"Generation", "NS.keys", "NS.objects"} for key in value)
+
+
+def _overall_difference_classification(entries: list[dict[str, Any]], full_semantic_equivalence: bool, repair_actually_successful: bool) -> str:
+    if not entries and full_semantic_equivalence:
+        return "none"
+    if any(bool(entry.get("blocks_repair_success", False)) for entry in entries):
+        return "repair_relevant_difference"
+    if repair_actually_successful and entries:
+        return "unrelated_semantic_difference"
+    return "repair_relevant_difference"
 
 
 def _unrelated_semantic_difference_count(target_value: Any, artifact_value: Any) -> int:
@@ -678,6 +848,19 @@ def render_networkextension_apply_validation(validation: NetworkExtensionApplyVa
     ]
     for stage in validation.stages:
         lines.append(f"- {stage.name}: {stage.status} — {stage.reason} ({stage.duration_ms:.1f} ms)")
+    difference_entries = validation.semantic_comparison.get("repair_relevant_semantic_difference_entries", [])
+    if difference_entries:
+        lines.extend(["", "Repair-relevant semantic difference details"])
+        for entry in difference_entries:
+            lines.extend(
+                [
+                    f"- {entry.get('id', 'unknown')}: {entry.get('classification', 'unknown_repair_relevant_difference')} — blocks repair success: {str(entry.get('blocks_repair_success', True)).lower()}",
+                    f"  Path: {entry.get('semantic_path', entry.get('object_path', 'unknown'))}",
+                    f"  Values: {entry.get('expected_generated_value_summary', '')} → {entry.get('actual_target_value_summary', '')}",
+                    f"  Explanation: {entry.get('explanation', '')}",
+                    f"  Suggested next action: {entry.get('suggested_next_action', '')}",
+                ]
+            )
     if validation.failure:
         lines.extend(
             [
