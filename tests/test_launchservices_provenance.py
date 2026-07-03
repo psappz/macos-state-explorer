@@ -198,10 +198,10 @@ def test_bundle_diff_includes_provenance_diff(tmp_path):
 def test_provenance_documentation_defines_public_project_identity_only():
     docs = "\n".join(Path(path).read_text() for path in ["README.md", "CONTRIBUTING.md", "ARCHITECTURE.md", "ROADMAP.md", "docs/LAUNCHSERVICES_OUTCOME_ENGINE.md"])
 
-    assert "WASP Prism" in docs
-    assert "repository rename deferred until after the Chrome Local Network reference case is solved" in docs
+    assert "Open State Diagnostics & Repair Framework" in docs
+    assert "Open State Diagnostics & Repair Framework" in docs
     assert "Chrome Local Network reference case" in docs
     assert "Core must not contain domain-specific logic" in docs
     assert "Every architecture-affecting PR must update docs" in docs
     assert "Registration Provenance Engine" in docs
-    assert "WASP Lens" not in docs
+    assert "OSDRF" not in docs

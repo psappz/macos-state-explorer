@@ -54,7 +54,7 @@ Phase 2 is investigation-driven and keeps the Chrome Local Network reference cas
 
 Modeled provenance must be separated from observed producer evidence, observed consumer evidence, inferred persistence mechanism, and unknown signals. Snapshot signals such as lsregister dump paths, bundle identifiers, missing paths, Trash paths, mounted-volume paths, updater paths, active application paths, and `.csstore` candidate files are reported as observed evidence. Trace-backed signals such as SecurityPrivacyExtension `.csstore` reads, System Settings Privacy UI activity, and RunningBoard activity are observed only when a trace is supplied. SecurityPrivacyExtension plus `.csstore` access in the same trace window/process context is reported as observed consumer evidence, not merely modeled provenance. Without a trace, those signals are explicitly reported as unknown rather than implied.
 
-The repository remains `macos-state-explorer`; WASP Prism is the future public project identity.
+The repository remains `macos-state-explorer`; Open State Diagnostics & Repair Framework is the future public project identity.
 
 ## Trace Correlation Evidence investigation
 

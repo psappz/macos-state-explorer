@@ -322,18 +322,19 @@ def test_phase1_lifecycle_outcome_documentation_exists():
     assert "manual-review generations intentionally terminate automatic execution" in note
 
 
-def test_project_identity_and_versioning_documentation_mentions_wasp_prism_transition():
+def test_project_identity_and_versioning_documentation_uses_public_framework_name():
     readme = Path("README.md").read_text()
     contributing = Path("CONTRIBUTING.md").read_text()
     architecture = Path("ARCHITECTURE.md").read_text()
     roadmap = Path("ROADMAP.md").read_text()
 
     combined = "\n".join([readme, contributing, architecture, roadmap])
-    assert "WASP Prism" in combined
-    assert "Web Application Security & Performance" in combined
-    assert "macos-state-explorer -> wasp-prism" in combined
+    assert "Open State Diagnostics & Repair Framework" in combined
+    assert "WASP" not in combined
+    assert "wasp-prism" not in combined
+    assert "OSDRF" not in combined
     assert "Chrome Local Network" in combined
     assert "Core must not contain domain-specific logic" in architecture
     assert "Every domain-specific implementation must be an Engine" in architecture
     assert "Every architecture-affecting PR must update docs" in contributing
-    assert "0.x = pre-rename / reference-case validation" in roadmap
+    assert "0.x = reference-case validation" in roadmap

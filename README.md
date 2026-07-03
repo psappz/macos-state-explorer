@@ -1,15 +1,13 @@
-# macOS State Explorer v1
+# Open State Diagnostics & Repair Framework v1
 
-macOS State Explorer is the current repository name for the public reference engine that is evolving into **WASP Prism**.
-
-**WASP** stands for **Web Application Security & Performance**.
+Open State Diagnostics & Repair Framework is the public project name for this evidence-driven diagnostic and repair framework.
 
 ## Project identity
 
-- **WASP Prism** is the future public project identity for this evidence-driven diagnostic project, with the repository rename deferred until after the Chrome Local Network reference case is solved.
-- This repository remains named `macos-state-explorer` until that reference case is fully solved.
-- Planned rename: `macos-state-explorer -> wasp-prism` after the Chrome Local Network reference case is complete.
-- Documentation describes only the public WASP Prism project.
+- **Open State Diagnostics & Repair Framework** is the public project identity for this evidence-driven diagnostic project.
+- This repository remains named `macos-state-explorer` for repository, package, import-path, and command-context compatibility.
+- Do not rename package/import/CLI identifiers in command examples unless a compatibility-safe rename is explicitly planned.
+- Documentation describes the public Open State Diagnostics & Repair Framework project while preserving technical identifiers where required.
 
 ## Current reference case
 
@@ -17,7 +15,7 @@ Priority 1 is the Chrome Local Network issue:
 
 > Explain why Chrome-related apps appear in **System Settings → Privacy & Security → Local Network** even when no `kTCCServiceLocalNetwork` rows exist in `TCC.db`, then prove the safe terminal remediation/outcome state.
 
-The current macOS/LaunchServices implementation is the public reference engine and reference case for WASP Prism. No new Diagnostic Engines should be added until the Chrome Local Network reference case is fully solved.
+The current macOS/LaunchServices implementation is the public reference engine and reference case for Open State Diagnostics & Repair Framework. No new Diagnostic Engines should be added until the Chrome Local Network reference case is fully solved.
 
 Phase 2 is investigation-driven: modeled provenance must be kept separate from observed producer evidence, observed consumer evidence, inferred persistence mechanism, trace correlation evidence, high-fidelity trace timeline evidence, regeneration evidence, and unknown signals. The Chrome Local Network reference case remains the highest priority.
 
