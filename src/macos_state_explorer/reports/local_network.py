@@ -19,6 +19,7 @@ from macos_state_explorer.launchservices.producer_evidence import build_launchse
 from macos_state_explorer.launchservices.provenance import build_launchservices_provenance, render_launchservices_provenance, render_provenance_summary
 from macos_state_explorer.launchservices.regeneration import build_launchservices_regeneration, local_network_regeneration_summary, render_launchservices_regeneration, render_regeneration_summary
 from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
+from macos_state_explorer.networkextension_apply_validation import DEFAULT_APPLY_VALIDATION_ARTIFACT, DEFAULT_APPLY_VALIDATION_METADATA, DEFAULT_APPLY_VALIDATION_TARGET, networkextension_apply_validation_summary, render_networkextension_apply_validation, render_networkextension_apply_validation_summary, validate_networkextension_apply
 from macos_state_explorer.networkextension_candidate_validation import build_networkextension_candidate_validation, networkextension_candidate_validation_summary, render_networkextension_candidate_validation, render_networkextension_candidate_validation_summary
 from macos_state_explorer.networkextension_correlation import build_networkextension_correlation, networkextension_correlation_summary, render_networkextension_correlation, render_networkextension_correlation_summary
 from macos_state_explorer.networkextension_object_graph import build_networkextension_object_graph, networkextension_object_graph_summary, render_networkextension_object_graph, render_networkextension_object_graph_summary
@@ -87,6 +88,7 @@ class LocalNetworkReport:
         payload["networkextension_repair_simulation_summary"] = networkextension_repair_simulation_summary(_report_networkextension_repair_simulation(self))
         payload["networkextension_repair_artifact_summary"] = networkextension_repair_artifact_summary(_report_networkextension_repair_artifact(self))
         payload["networkextension_repair_apply_summary"] = networkextension_repair_apply_summary(_report_networkextension_repair_apply())
+        payload["networkextension_apply_validation_summary"] = networkextension_apply_validation_summary(_report_networkextension_apply_validation())
         payload["launchservices_analysis"] = (
             self.launchservices_analysis.to_json_dict()
             if self.launchservices_analysis
@@ -178,6 +180,8 @@ class LocalNetworkReport:
             lines.extend(["", render_networkextension_repair_artifact_summary(payload["networkextension_repair_artifact_summary"])])
         if payload.get("networkextension_repair_apply_summary"):
             lines.extend(["", render_networkextension_repair_apply_summary(payload["networkextension_repair_apply_summary"])])
+        if payload.get("networkextension_apply_validation_summary"):
+            lines.extend(["", render_networkextension_apply_validation_summary(payload["networkextension_apply_validation_summary"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -323,6 +327,9 @@ def write_local_network_support_bundle(
     )
     (bundle / "networkextension-repair-apply.json").write_text(json.dumps(networkextension_repair_apply.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "networkextension-repair-apply.txt").write_text(render_networkextension_repair_apply(networkextension_repair_apply) + "\n")
+    networkextension_apply_validation = _report_networkextension_apply_validation()
+    (bundle / "networkextension-apply-validation.json").write_text(json.dumps(networkextension_apply_validation.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
+    (bundle / "networkextension-apply-validation.txt").write_text(render_networkextension_apply_validation(networkextension_apply_validation) + "\n")
     return bundle
 
 
@@ -422,6 +429,14 @@ def _report_networkextension_repair_artifact(report: LocalNetworkReport):
 
 def _report_networkextension_repair_apply():
     return apply_networkextension_repair_artifact()
+
+
+def _report_networkextension_apply_validation():
+    return validate_networkextension_apply(
+        DEFAULT_APPLY_VALIDATION_TARGET,
+        DEFAULT_APPLY_VALIDATION_ARTIFACT,
+        metadata_path=DEFAULT_APPLY_VALIDATION_METADATA,
+    )
 
 
 def _build_networkextension_repair_artifact_or_metadata(runbook, simulation, output_path: Path):

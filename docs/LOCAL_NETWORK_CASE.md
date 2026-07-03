@@ -294,4 +294,16 @@ Apply output records `final_status`, `dry_run`, `mutation_performed`, `backup_cr
 
 Support bundles include the dry-run metadata artifacts `networkextension-repair-apply.json` and `networkextension-repair-apply.txt`, and bundle diffs include `NetworkExtension Repair Apply Diff`, added/removed blockers, changed blocker details, and SHA mismatch details.
 
+## NetworkExtension post-apply validation
+
+`mse networkextension apply-validation` is a strictly read-only validator intended to run only after a successful guarded apply. It never writes, deletes, rolls back, regenerates repair content, changes planner output, edits LaunchServices, resets TCC, or modifies diagnosis/ranking/solver behavior.
+
+The validator checks the repaired target in deterministic order: target existence, plist readability, `plutil` linting, NSKeyedArchiver structure, object-graph reconstruction, graph consistency, broken/dangling UID references, malformed arrays/dictionaries, duplicate object-index impossibility, serialization round-trip consistency, object-graph analysis, repair-candidate analysis, candidate-validation analysis, zero remaining removable repair candidates, exact comparison with the generated repair artifact, and summary generation.
+
+JSON and text output include every validation stage with PASS/FAIL, reason, duration, expected and observed values, generated statistics, object count, UID count, UID rewrites, array count, dictionary count, repair candidates remaining, validation candidates remaining, graph consistency, archive integrity, SHA/object-graph/serialization comparison, and an overall verdict: `VALIDATION_PASSED`, `VALIDATION_FAILED`, or `VALIDATION_INCONCLUSIVE`.
+
+On failure, the command reports the exact failed stage plus expected value, observed value, and a recommended rollback action. It does not perform rollback automatically. The recommendation is advisory so the user can decide whether to restore the pre-apply backup and rerun validation.
+
+Support bundles include `networkextension-apply-validation.json` and `networkextension-apply-validation.txt`; local-network reports include `networkextension_apply_validation_summary`. Bundle diffs include `NetworkExtension Apply Validation Diff` with validation-result changes, candidate-count deltas, target/artifact hash changes, and graph-consistency changes.
+
 Research note: the observed Local Network behavior is consistent with publicly discussed macOS Local Network issues, including Apple Feedback FB15681423 and Chromium reports. The implementation remains independent of undocumented platform behavior: it relies only on collected LaunchServices evidence, trace artifacts when supplied, NetworkExtension preference observations when readable, and deterministic snapshot comparison.

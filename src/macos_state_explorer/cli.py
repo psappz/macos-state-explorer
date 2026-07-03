@@ -44,6 +44,7 @@ from macos_state_explorer.networkextension_repair_transaction_package import bui
 from macos_state_explorer.networkextension_manual_repair_runbook import build_networkextension_manual_repair_runbook, render_networkextension_manual_repair_runbook
 from macos_state_explorer.networkextension_repair_simulation import build_networkextension_repair_simulation, render_networkextension_repair_simulation
 from macos_state_explorer.networkextension_repair_artifact import build_networkextension_repair_artifact, render_networkextension_repair_artifact
+from macos_state_explorer.networkextension_apply_validation import validate_networkextension_apply, render_networkextension_apply_validation
 from macos_state_explorer.networkextension_repair_apply import DEFAULT_ARTIFACT, DEFAULT_BACKUP_DIR, DEFAULT_METADATA, DEFAULT_TARGET, CONFIRMATION_STRING, apply_networkextension_repair_artifact, render_networkextension_repair_apply
 from macos_state_explorer.networkextension_state import build_networkextension_state, default_networkextension_roots, render_networkextension_state
 from macos_state_explorer.remediation.rules import build_remediation_plan
@@ -302,6 +303,20 @@ def networkextension_apply_repair_artifact_command(
         typer.echo(json_module.dumps(result.to_json_dict(), sort_keys=False))
     else:
         console.print(render_networkextension_repair_apply(result), markup=False)
+
+
+@networkextension_app.command("apply-validation")
+def networkextension_apply_validation_command(
+    target: Path = typer.Option(DEFAULT_TARGET, "--target", help="Post-apply target plist to validate."),
+    artifact: Path = typer.Option(DEFAULT_ARTIFACT, "--artifact", help="Generated repair artifact expected to match the target."),
+    metadata: Path = typer.Option(DEFAULT_METADATA, "--metadata", help="JSON metadata produced with the generated artifact."),
+    json_output: bool = typer.Option(False, "--json", help="Emit deterministic JSON."),
+):
+    validation = validate_networkextension_apply(target, artifact, metadata_path=metadata)
+    if json_output:
+        typer.echo(json_module.dumps(validation.to_json_dict(), sort_keys=False))
+    else:
+        console.print(render_networkextension_apply_validation(validation), markup=False)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -1183,6 +1198,7 @@ def _diff_support_bundles(before: Path, after: Path) -> dict[str, Any]:
         "networkextension_repair_simulation_diff": _bundle_networkextension_repair_simulation_diff(before_report, after_report),
         "networkextension_repair_artifact_diff": _bundle_networkextension_repair_artifact_diff(before_report, after_report),
         "networkextension_repair_apply_diff": _bundle_networkextension_repair_apply_diff(before_report, after_report),
+        "networkextension_apply_validation_diff": _bundle_networkextension_apply_validation_diff(before_report, after_report),
         "trace_correlation_diff": _bundle_trace_correlation_diff(before_report, after_report),
         "trace_timeline_diff": _bundle_trace_timeline_diff(before_report, after_report),
         "changed_fields": changed_fields,
@@ -1621,6 +1637,29 @@ def _bundle_networkextension_repair_apply_diff(before_report: dict[str, Any], af
     }
 
 
+def _bundle_networkextension_apply_validation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
+    before_value = before_report.get("networkextension_apply_validation_summary")
+    after_value = after_report.get("networkextension_apply_validation_summary")
+    before = before_value if isinstance(before_value, dict) else {}
+    after = after_value if isinstance(after_value, dict) else {}
+    return {
+        "verdict_before": str(before.get("overall_verdict", "VALIDATION_INCONCLUSIVE")),
+        "verdict_after": str(after.get("overall_verdict", "VALIDATION_INCONCLUSIVE")),
+        "repair_candidates_remaining_delta": int(after.get("repair_candidates_remaining", 0)) - int(before.get("repair_candidates_remaining", 0)),
+        "validation_candidates_remaining_delta": int(after.get("validation_candidates_remaining", 0)) - int(before.get("validation_candidates_remaining", 0)),
+        "target_sha256_before": str(before.get("target_sha256", "")),
+        "target_sha256_after": str(after.get("target_sha256", "")),
+        "artifact_sha256_before": str(before.get("artifact_sha256", "")),
+        "artifact_sha256_after": str(after.get("artifact_sha256", "")),
+        "graph_consistency_before": str(before.get("graph_consistency", "UNKNOWN")),
+        "graph_consistency_after": str(after.get("graph_consistency", "UNKNOWN")),
+        "sha256_identical_before": bool(before.get("sha256_identical", False)),
+        "sha256_identical_after": bool(after.get("sha256_identical", False)),
+        "object_graph_identical_before": bool(before.get("object_graph_identical", False)),
+        "object_graph_identical_after": bool(after.get("object_graph_identical", False)),
+    }
+
+
 def _bundle_trace_correlation_diff(before_report: dict[str, Any], after_report: dict[str, Any]) -> dict[str, object]:
     before_value = before_report.get("trace_correlation_summary")
     after_value = after_report.get("trace_correlation_summary")
@@ -1707,6 +1746,7 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
     networkextension_repair_simulation = diff.get("networkextension_repair_simulation_diff", {})
     networkextension_repair_artifact = diff.get("networkextension_repair_artifact_diff", {})
     networkextension_repair_apply = diff.get("networkextension_repair_apply_diff", {})
+    networkextension_apply_validation = diff.get("networkextension_apply_validation_diff", {})
     trace_correlation = diff.get("trace_correlation_diff", {})
     trace_timeline = diff.get("trace_timeline_diff", {})
     lines = [
@@ -1863,6 +1903,14 @@ def _render_bundle_diff(diff: dict[str, Any]) -> str:
         f"- Added blockers: {', '.join(networkextension_repair_apply.get('added_blockers', [])) if networkextension_repair_apply.get('added_blockers') else 'none'}",
         f"- Removed blockers: {', '.join(networkextension_repair_apply.get('removed_blockers', [])) if networkextension_repair_apply.get('removed_blockers') else 'none'}",
         f"- SHA mismatch: expected {networkextension_repair_apply.get('expected_source_sha256_after', '') or 'none'}, actual {networkextension_repair_apply.get('actual_source_sha256_after', '') or 'none'}",
+        "",
+        "NetworkExtension Apply Validation Diff",
+        f"- Validation result: {networkextension_apply_validation.get('verdict_before', 'VALIDATION_INCONCLUSIVE')} → {networkextension_apply_validation.get('verdict_after', 'VALIDATION_INCONCLUSIVE')}",
+        f"- Repair candidates remaining: {networkextension_apply_validation.get('repair_candidates_remaining_delta', 0):+d}",
+        f"- Validation candidates remaining: {networkextension_apply_validation.get('validation_candidates_remaining_delta', 0):+d}",
+        f"- Target SHA256: {networkextension_apply_validation.get('target_sha256_before', '') or 'none'} → {networkextension_apply_validation.get('target_sha256_after', '') or 'none'}",
+        f"- Artifact SHA256: {networkextension_apply_validation.get('artifact_sha256_before', '') or 'none'} → {networkextension_apply_validation.get('artifact_sha256_after', '') or 'none'}",
+        f"- Graph consistency: {networkextension_apply_validation.get('graph_consistency_before', 'UNKNOWN')} → {networkextension_apply_validation.get('graph_consistency_after', 'UNKNOWN')}",
         "",
         "Trace Correlation Diff",
         f"- Added correlations: {', '.join(trace_correlation.get('added_correlations', [])) if trace_correlation.get('added_correlations') else 'none'}",
