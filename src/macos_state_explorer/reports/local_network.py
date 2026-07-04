@@ -66,6 +66,8 @@ class LocalNetworkReport:
             payload["remediation_plan_summary"] = self.solution.remediation_plan_summary
         if self.solution.launchservices_outcome_summary is not None:
             payload["launchservices_outcome_summary"] = self.solution.launchservices_outcome_summary
+        if self.solution.local_network_reasoning_summary is not None:
+            payload["local_network_reasoning_summary"] = self.solution.local_network_reasoning_summary
         if self.solution.launchservices_provenance_summary is not None:
             payload["launchservices_provenance_summary"] = self.solution.launchservices_provenance_summary
         if self.solution.launchservices_producer_evidence_summary is not None:
@@ -140,6 +142,11 @@ class LocalNetworkReport:
                 f"- {evidence['id']} [{state}, confidence {evidence['confidence']:.0%}{provenance}] "
                 f"{evidence['title']}: {evidence['detail']}"
             )
+
+        if payload.get("local_network_reasoning_summary"):
+            from macos_state_explorer.diagnostics.local_network.reasoning import render_reasoning_summary
+
+            lines.extend(["", render_reasoning_summary(payload["local_network_reasoning_summary"])])
 
         if payload.get("remediation_plan_summary"):
             lines.extend(["", render_remediation_plan_summary(payload["remediation_plan_summary"])])

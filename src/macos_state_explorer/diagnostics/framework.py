@@ -507,6 +507,7 @@ class DiagnosticSolution:
     trace_correlation_summary: dict[str, Any] | None = None
     trace_timeline_summary: dict[str, Any] | None = None
     networkextension_state_summary: dict[str, Any] | None = None
+    local_network_reasoning_summary: dict[str, Any] | None = None
 
     def render_text(self) -> str:
         primary = self.repair_plan[0]
@@ -523,6 +524,11 @@ class DiagnosticSolution:
                 f"- {evidence.id} [{state}, confidence {evidence.confidence:.0%}{provenance}] "
                 f"{evidence.title}: {evidence.detail}"
             )
+
+        if self.local_network_reasoning_summary:
+            from macos_state_explorer.diagnostics.local_network.reasoning import render_reasoning_summary
+
+            lines.extend(["", render_reasoning_summary(self.local_network_reasoning_summary)])
 
         if self.remediation_plan_summary:
             from macos_state_explorer.launchservices.remediation_plan import render_remediation_plan_summary
@@ -618,6 +624,8 @@ class DiagnosticSolution:
             payload["trace_timeline_summary"] = self.trace_timeline_summary
         if self.networkextension_state_summary is not None:
             payload["networkextension_state_summary"] = self.networkextension_state_summary
+        if self.local_network_reasoning_summary is not None:
+            payload["local_network_reasoning_summary"] = self.local_network_reasoning_summary
         return payload
 
 

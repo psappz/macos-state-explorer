@@ -131,6 +131,39 @@ def test_solver_renders_confidence_for_evidence():
     assert "confidence" in solution.render_text()
 
 
+def test_solver_reports_healthy_functional_state_without_hiding_stale_launchservices():
+    trace_analysis = {
+        "functional_state": {
+            "local_network_ui": "healthy",
+            "chrome_entry_count": 1,
+            "permission_enabled": True,
+            "communication": "successful",
+        }
+    }
+
+    solution = build_local_network_solution(_snapshot_with_non_trash_stale_chrome(), trace_analysis=trace_analysis)
+    payload = solution.to_json_dict()
+
+    assert payload["local_network_reasoning_summary"] == {
+        "historical_evidence": {"launchservices_stale_count": 2, "tcc_missing_localnetwork_rows": True},
+        "current_functional_state": {
+            "status": "HEALTHY",
+            "local_network_ui": "healthy",
+            "chrome_entry_count": 1,
+            "permission_enabled": True,
+            "communication": "successful",
+            "networkextension": "unknown",
+        },
+        "current_risk": "LOW",
+        "diagnosis_state": "HEALTHY_WITH_HISTORICAL_EVIDENCE",
+        "confidence_scores": {"historical_confidence": 0.9, "failure_confidence": 0.2},
+    }
+    assert any(item["id"] == "LN-E002" and item["present"] for item in payload["evidence"])
+    assert "not currently affecting Local Network functionality" in payload["diagnosis"]
+    assert "Current functional state" in solution.render_text()
+    assert "Risk: LOW" in solution.render_text()
+
+
 def test_cli_solve_local_network_command_works(monkeypatch):
     monkeypatch.setattr(
         "macos_state_explorer.cli.create_snapshot",

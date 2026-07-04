@@ -15,6 +15,7 @@ from macos_state_explorer.diagnostics.framework import (
 )
 from macos_state_explorer.diagnostics.local_network.evidence import LocalNetworkEvidence, collect_local_network_evidence
 from macos_state_explorer.diagnostics.local_network.module import LOCAL_NETWORK_MODULE
+from macos_state_explorer.diagnostics.local_network.reasoning import build_local_network_reasoning
 from macos_state_explorer.launchservices.analysis import analysis_records_from_snapshot_payload
 from macos_state_explorer.launchservices.generations import analyze_generations
 from macos_state_explorer.launchservices.outcome import build_launchservices_outcome, outcome_summary, read_execute_plan_audit_history
@@ -47,8 +48,10 @@ def build_local_network_solution(
         supporting_commands=LOCAL_NETWORK_MODULE.supporting_commands,
     )
     solution = FrameworkDiagnosticEngine(module).solve(snapshot, context={"trace_analysis": trace_analysis})
+    reasoning = build_local_network_reasoning(snapshot, trace_analysis=trace_analysis if isinstance(trace_analysis, dict) else None)
     return replace(
         solution,
+        diagnosis=reasoning.conclusion if reasoning.current_functional_state.status in {"HEALTHY", "DEGRADED", "BROKEN"} else solution.diagnosis,
         remediation_plan_summary=_launchservices_remediation_summary(snapshot),
         launchservices_outcome_summary=_launchservices_outcome_summary(snapshot, launchservices_audit_log),
         launchservices_provenance_summary=_launchservices_provenance_summary(snapshot),
@@ -56,6 +59,7 @@ def build_local_network_solution(
         trace_correlation_summary=_trace_correlation_summary(trace_analysis),
         trace_timeline_summary=_trace_timeline_summary(trace_analysis),
         networkextension_state_summary=_networkextension_state_summary(),
+        local_network_reasoning_summary=reasoning.to_json_dict(),
     )
 
 
