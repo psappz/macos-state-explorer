@@ -17,7 +17,7 @@ Report vulnerabilities privately to the repository maintainers. Include:
 
 ## Safety Scope
 
-macOS State Explorer is intended to be read-only. Security-sensitive changes must not:
+Open State Diagnostics & Repair Framework is intended to be read-only. Security-sensitive changes must not:
 
 - Reset TCC.
 - Delete caches.

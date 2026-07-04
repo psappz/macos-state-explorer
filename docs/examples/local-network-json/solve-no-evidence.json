@@ -1,0 +1,140 @@
+{
+  "command": "solve local-network",
+  "diagnosis": "The current read-only snapshot does not contain enough stale LaunchServices evidence to repair safely; start with trace evidence before any manual repair beyond normal reboot/re-check.",
+  "evidence": [
+    {
+      "id": "LN-E001",
+      "title": "No kTCCServiceLocalNetwork rows found",
+      "detail": "TCC/REG data includes Local Network terms; inspect before assuming LaunchServices is primary.",
+      "source": "tcc",
+      "present": false,
+      "confidence": 0.8,
+      "provenance": [
+        "tcc"
+      ]
+    },
+    {
+      "id": "LN-E002",
+      "title": "LaunchServices has stale/orphaned Chrome or Google registrations",
+      "detail": "0 stale LaunchServices entries were reported.",
+      "source": "launchservices",
+      "present": false,
+      "confidence": 0.8,
+      "provenance": [
+        "launchservices"
+      ]
+    },
+    {
+      "id": "LN-E003",
+      "title": "LaunchServices store files are in the evidence set",
+      "detail": "No LaunchServices candidate file list was captured in this snapshot.",
+      "source": "launchservices",
+      "present": false,
+      "confidence": 0.8,
+      "provenance": [
+        "filesystem",
+        "launchservices"
+      ]
+    },
+    {
+      "id": "LN-E004",
+      "title": "SecurityPrivacyExtension appears in Local Network trace",
+      "detail": "No SecurityPrivacyExtension trace evidence was provided to this solver run.",
+      "source": "trace",
+      "present": false,
+      "confidence": 0.6,
+      "provenance": [
+        "trace"
+      ]
+    },
+    {
+      "id": "LN-E005",
+      "title": "LaunchServices .csstore files appear heavily in Local Network trace",
+      "detail": "No .csstore trace evidence was provided to this solver run.",
+      "source": "trace",
+      "present": false,
+      "confidence": 0.64,
+      "provenance": [
+        "filesystem",
+        "launchservices",
+        "trace"
+      ]
+    },
+    {
+      "id": "LN-E006",
+      "title": "com.google.Chrome.code_sign_clone appears in evidence",
+      "detail": "No code_sign_clone identity appears in this snapshot.",
+      "source": "launchservices/trace",
+      "present": false,
+      "confidence": 0.68,
+      "provenance": [
+        "chrome"
+      ]
+    },
+    {
+      "id": "LN-E007",
+      "title": "Chrome or Google stale registration points to Trash",
+      "detail": "No stale Chrome/Google LaunchServices entry points inside Trash.",
+      "source": "launchservices",
+      "present": false,
+      "confidence": 0.7,
+      "provenance": [
+        "filesystem",
+        "launchservices",
+        "chrome"
+      ]
+    },
+    {
+      "id": "LN-E008",
+      "title": "Chrome or Google stale registration is not Trash-specific",
+      "detail": "No non-Trash Chrome/Google stale LaunchServices entry was found.",
+      "source": "launchservices",
+      "present": false,
+      "confidence": 0.65,
+      "provenance": [
+        "filesystem",
+        "launchservices",
+        "chrome"
+      ]
+    },
+    {
+      "id": "LN-E009",
+      "title": "RunningBoard activity appears in Local Network trace",
+      "detail": "No RunningBoard trace evidence was provided to this solver run.",
+      "source": "trace",
+      "present": false,
+      "confidence": 0.55,
+      "provenance": [
+        "runningboard",
+        "trace"
+      ]
+    }
+  ],
+  "matched_rules": [],
+  "repair_candidates": [
+    {
+      "id": "trace-local-network",
+      "title": "Run a focused Local Network trace while opening System Settings",
+      "risk": "Low: read-only logging and filesystem observation; sudo may be requested by macOS for fs_usage/lsof visibility.",
+      "manual_action": "Run the trace command, open System Settings \u2192 Privacy & Security \u2192 Local Network, wait 20\u201330 seconds, then stop the trace.",
+      "expected_result": "The trace should identify whether SecurityPrivacyExtension, LaunchServices .csstore reads, TCC/REG, or another privacy cache is feeding the stale GUI entry.",
+      "verification_command": "mse trace local-network ~/Desktop/mse-local-network-trace",
+      "fallback_branch": "If the trace still does not identify a safe repair, collect a full read-only bundle with mse collect and inspect the generated evidence before proposing any higher-risk action.",
+      "evidence_ids": [
+        "LN-E001"
+      ]
+    }
+  ],
+  "next_action": {
+    "id": "trace-local-network",
+    "title": "Run a focused Local Network trace while opening System Settings",
+    "risk": "Low: read-only logging and filesystem observation; sudo may be requested by macOS for fs_usage/lsof visibility.",
+    "manual_action": "Run the trace command, open System Settings \u2192 Privacy & Security \u2192 Local Network, wait 20\u201330 seconds, then stop the trace.",
+    "expected_result": "The trace should identify whether SecurityPrivacyExtension, LaunchServices .csstore reads, TCC/REG, or another privacy cache is feeding the stale GUI entry.",
+    "verification_command": "mse trace local-network ~/Desktop/mse-local-network-trace",
+    "fallback_branch": "If the trace still does not identify a safe repair, collect a full read-only bundle with mse collect and inspect the generated evidence before proposing any higher-risk action.",
+    "evidence_ids": [
+      "LN-E001"
+    ]
+  }
+}

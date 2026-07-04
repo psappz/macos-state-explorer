@@ -32,7 +32,7 @@ def infer(snapshot: Snapshot) -> list[Hypothesis]:
             title="Local Network GUI may be backed by app registry metadata or a privacy cache layer",
             confidence=0.80,
             evidence=["LaunchServices has stale app records.", "TCC lacks LocalNetwork rows."],
-            next_actions=["Run `mse trace local-network --out ~/Desktop/mse-trace`."],
+            next_actions=["Run `mse trace local-network ~/Desktop/mse-trace`."],
         ))
 
     return hyps

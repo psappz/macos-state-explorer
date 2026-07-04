@@ -1,0 +1,82 @@
+name: local-network
+description: Focused read-only diagnostic workflow for macOS Chrome Local Network privacy state.
+safety:
+  default_mode: read-only
+  forbidden:
+    - cache deletion
+    - TCC reset
+    - process killing
+    - file deletion
+    - sqlite writes
+    - LaunchServices reset operations
+facts:
+  - id: localnetwork.tcc.no_rows
+    statement: No kTCCServiceLocalNetwork rows exist in collected TCC state.
+  - id: localnetwork.launchservices.chrome_stale
+    statement: LaunchServices contains stale/orphaned Chrome or Google registrations.
+  - id: localnetwork.securityprivacyextension.involved
+    statement: SecurityPrivacyExtension.appex is involved while the Local Network settings page is open.
+  - id: localnetwork.launchservices.csstore_accessed
+    statement: LaunchServices .csstore files are heavily accessed during tracing.
+steps:
+  - run_fast_snapshot
+  - extract_evidence
+  - build_remediation_plan
+  - produce_local_network_diagnosis
+  - render_terminal_report
+solve_workflow:
+  command: mse solve local-network
+  steps:
+    - run_fast_snapshot
+    - extract_evidence
+    - build_diagnosis
+    - select_repair_candidate
+    - explain_risk_expected_result_verification_fallback
+    - verify_after_manual_step
+repair_branches:
+  - id: manual-empty-trash-reboot
+    mode: manual
+    risk: medium
+    evidence:
+      - localnetwork.launchservices.chrome_stale
+    expected_change: LaunchServices Chrome/Google stale evidence disappears or changes after Trash review/empty and reboot.
+    verification: mse verify local-network --branch manual-empty-trash-reboot
+    fallback: manual-reinstall-chrome
+  - id: manual-reinstall-chrome
+    mode: manual
+    risk: medium
+    evidence:
+      - localnetwork.tcc.no_rows
+      - localnetwork.launchservices.chrome_stale
+    expected_change: Fresh Chrome registration replaces stale/code-sign-clone LaunchServices identity.
+    verification: mse verify local-network --branch manual-reinstall-chrome
+    fallback: trace-local-network
+  - id: trace-local-network
+    mode: read-only
+    risk: low
+    evidence:
+      - localnetwork.tcc.no_rows
+      - localnetwork.securityprivacyextension.involved
+      - localnetwork.launchservices.csstore_accessed
+    expected_change: Trace produces correlated evidence identifying the privacy/cache/registry layer involved.
+    verification: inspect generated trace report and rerun mse solve local-network
+    fallback: collect-full-evidence
+trace_correlation:
+  signals:
+    - securityprivacyextension
+    - launchservices_csstore
+    - tcc_localnetwork
+    - chrome_code_sign_clone
+    - runningboard
+  outputs:
+    - analysis.json: includes signal_counts, correlation_summary and timeline_events
+    - index.html: renders root-cause signals, correlated timeline and candidate paths
+verification:
+  primary: mse diagnose local-network
+  fallback: mse trace local-network --out ~/Desktop/mse-local-network-trace
+commands:
+  diagnosis: mse diagnose local-network
+  solve: mse solve local-network
+  verify: mse verify local-network --branch manual-empty-trash-reboot
+  trace: mse trace local-network --out ~/Desktop/mse-local-network-trace
+  collect: mse collect ~/Desktop/mse-local-network-collect --fast

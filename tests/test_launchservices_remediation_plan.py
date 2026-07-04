@@ -1,0 +1,714 @@
+from __future__ import annotations
+
+import json
+
+from typer.testing import CliRunner
+
+from macos_state_explorer.cli import app
+from macos_state_explorer.core.model import Observation, Snapshot
+from macos_state_explorer.launchservices.generations import GenerationClassification, analyze_generations
+from macos_state_explorer.launchservices.models import LaunchServicesRecord, LaunchServicesStatus
+from macos_state_explorer.launchservices.remediation_plan import (
+    RemediationSafety,
+    plan_launchservices_remediation,
+    render_remediation_plan,
+)
+
+
+def record(
+    path: str,
+    *,
+    bundle_id: str,
+    name: str,
+    version: str | None,
+    path_exists: bool | None = False,
+    volume: str | None = "/",
+    volume_exists: bool | None = True,
+    classification: LaunchServicesStatus = LaunchServicesStatus.STALE,
+) -> LaunchServicesRecord:
+    return LaunchServicesRecord(
+        raw_block=f"path: {path}",
+        bundle_id=bundle_id,
+        name=name,
+        display_name=name,
+        version=version,
+        display_version=version,
+        path=path,
+        path_clean=path,
+        path_exists=path_exists,
+        volume=volume,
+        volume_exists=volume_exists,
+        classification=classification,
+    )
+
+
+def planning_records() -> list[LaunchServicesRecord]:
+    return [
+        record(
+            "/Applications/Google Chrome.app",
+            bundle_id="com.google.Chrome",
+            name="Google Chrome",
+            version="149.0.7827.250",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+        record(
+            "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/148.0.7778.216/Helpers/Google Chrome Helper.app",
+            bundle_id="com.google.Chrome.helper",
+            name="Google Chrome Helper",
+            version="148.0.7778.216",
+        ),
+        record(
+            "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/148.0.7778.216/Helpers/Google Chrome Helper (Renderer).app",
+            bundle_id="com.google.Chrome.helper.renderer",
+            name="Google Chrome Helper (Renderer)",
+            version="148.0.7778.216",
+        ),
+        record(
+            "/Volumes/Google Chrome/Google Chrome.app",
+            bundle_id="com.google.Chrome",
+            name="Google Chrome",
+            version="149.0.7827.201",
+            volume="/Volumes/Google Chrome",
+            volume_exists=True,
+        ),
+        record(
+            "/Users/patrick/.Trash/Google Chrome.app",
+            bundle_id="com.google.Chrome",
+            name="Google Chrome",
+            version="149.0.7827.201",
+            path_exists=True,
+        ),
+        record(
+            "/Applications/GoogleUpdater.app",
+            bundle_id="com.google.GoogleUpdater",
+            name="GoogleUpdater",
+            version="2.0",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+        record(
+            "/Applications/GoogleUpdater.app/Contents/Helpers/GoogleUpdater Helper.app",
+            bundle_id="com.google.GoogleUpdater.helper",
+            name="GoogleUpdater Helper",
+            version="1.0",
+        ),
+        record(
+            "/Applications/Google Home.app",
+            bundle_id="com.google.GoogleHome",
+            name="Google Home",
+            version="4.0",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+        record(
+            "/Users/patrick/Library/Developer/CoreSimulator/Devices/IOSPlaceholder/YouTube.app",
+            bundle_id="com.google.ios.youtube",
+            name="YouTube",
+            version="19.0",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+        record(
+            "/Applications/Google Chrome Mystery.app",
+            bundle_id="com.google.Chrome.mystery",
+            name="Mystery",
+            version="1.0",
+            path_exists=None,
+            classification=LaunchServicesStatus.UNKNOWN,
+        ),
+    ]
+
+
+def skipped_only_records() -> list[LaunchServicesRecord]:
+    return [
+        item
+        for item in planning_records()
+        if "148.0.7778.216" not in (item.path_clean or item.path or "")
+    ]
+
+
+def snapshot(records: list[LaunchServicesRecord]) -> Snapshot:
+    return Snapshot(
+        host="plan-host",
+        created_at=123.0,
+        observations=[
+            Observation(
+                collector="launchservices",
+                started_at=1,
+                ended_at=2,
+                payload={
+                    "entries": [item.model_dump(mode="python") for item in records],
+                    "stale_entries": [item.model_dump(mode="python") for item in records if item.classification != LaunchServicesStatus.ACTIVE],
+                    "candidate_files": {"stdout": "/System/Library/LaunchServices/com.apple.LaunchServices.csstore\n"},
+                },
+            )
+        ],
+    )
+
+
+def volume_regression_records() -> list[LaunchServicesRecord]:
+    return [
+        record(
+            "/Applications/Google Chrome.app",
+            bundle_id="com.google.Chrome",
+            name="Google Chrome",
+            version="149.0.7827.250",
+            path_exists=True,
+            classification=LaunchServicesStatus.ACTIVE,
+        ),
+        record(
+            "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/148.0.7778.216/Helpers/Google Chrome Helper.app",
+            bundle_id="com.google.Chrome.helper",
+            name="Google Chrome Helper",
+            version="148.0.7778.216",
+        ),
+        record(
+            "/Volumes/Google Chrome/Google Chrome.app",
+            bundle_id="com.google.Chrome",
+            name="Google Chrome",
+            version="149.0.7827.201",
+            volume="/Volumes/Google Chrome",
+            volume_exists=False,
+        ),
+        record(
+            "/Volumes/Google Chrome/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/149.0.7827.201/Helpers/Google Chrome Helper.app",
+            bundle_id="com.google.Chrome.helper",
+            name="Google Chrome Helper",
+            version="149.0.7827.201",
+            volume="/Volumes/Google Chrome",
+            volume_exists=False,
+        ),
+    ]
+
+
+def test_product_detection_excludes_google_apps_and_ios_placeholders_from_chrome():
+    analysis = analyze_generations(planning_records())
+    families_by_name = {(generation.product_family, registration.name) for generation in analysis.generations for registration in generation.registrations}
+
+    assert ("Google Chrome", "Google Home") not in families_by_name
+    assert ("Google Chrome", "YouTube") not in families_by_name
+    assert all("googlehome" not in (generation.bundle_identifier or "").lower() for generation in analysis.generations)
+
+
+def test_google_updater_is_separate_from_chrome_active_generation():
+    analysis = analyze_generations(planning_records())
+    chrome_active = [generation for generation in analysis.generations if generation.product_family == "Google Chrome" and generation.classification == GenerationClassification.ACTIVE]
+    updater_generations = [generation for generation in analysis.generations if generation.product_family == "GoogleUpdater"]
+
+    assert len(chrome_active) == 1
+    assert chrome_active[0].generation_id == "google-chrome:149.0.7827.250:applications-google-chrome-app"
+    assert updater_generations
+    assert all(generation.product_family != "Google Chrome" for generation in updater_generations)
+
+
+def test_remediation_plan_steps_cover_obsolete_mounted_trash_and_stale_updater_generations():
+    plan = plan_launchservices_remediation(analyze_generations(planning_records()))
+    by_action = {step.action: step for step in plan.steps}
+
+    assert by_action["plan_unregister_obsolete_generation"].product_family == "Google Chrome"
+    assert by_action["plan_unregister_obsolete_generation"].safety == RemediationSafety.PLAN_ONLY_SAFE
+    assert by_action["plan_review_mounted_installer_generation"].safety == RemediationSafety.MANUAL_REVIEW_REQUIRED
+    assert by_action["plan_review_trash_generation"].safety == RemediationSafety.MANUAL_REVIEW_REQUIRED
+    assert by_action["plan_review_stale_updater_generation"].product_family == "GoogleUpdater"
+    assert all(step.executable is False for step in plan.steps)
+    assert all(step.requires_confirmation is True for step in plan.steps)
+
+
+def test_remediation_plan_never_selects_active_unknown_or_healthy_unrelated_entries():
+    plan = plan_launchservices_remediation(analyze_generations(planning_records()))
+    planned_registration_paths = {registration["path"] for step in plan.steps for registration in step.to_json_dict()["target_registrations"]}
+    skipped_by_id = {generation["generation_id"]: generation for generation in plan.to_json_dict()["skipped_generations"]}
+
+    assert "/Applications/Google Chrome.app" not in planned_registration_paths
+    assert all("Mystery" not in registration["name"] for step in plan.steps for registration in step.to_json_dict()["target_registrations"])
+    assert all("Google Home" not in registration["name"] for step in plan.steps for registration in step.to_json_dict()["target_registrations"])
+    assert all("YouTube" not in registration["name"] for step in plan.steps for registration in step.to_json_dict()["target_registrations"])
+    assert skipped_by_id["google-chrome:149.0.7827.250:applications-google-chrome-app"]["safety"] == "BLOCKED_ACTIVE_GENERATION"
+    assert any(item["safety"] == "BLOCKED_UNKNOWN" for item in skipped_by_id.values())
+
+
+def test_volume_generations_require_manual_review_even_when_classifier_marks_obsolete():
+    analysis = analyze_generations(volume_regression_records())
+    volume_generation = next(generation for generation in analysis.generations if (generation.installation_root or "").startswith("/Volumes/"))
+    plan = plan_launchservices_remediation(analysis)
+    steps_by_generation = {step.generation_id: step for step in plan.steps}
+
+    assert volume_generation.classification == GenerationClassification.STALE
+    assert steps_by_generation[volume_generation.generation_id].safety == RemediationSafety.MANUAL_REVIEW_REQUIRED
+    assert steps_by_generation[volume_generation.generation_id].action == "plan_review_mounted_installer_generation"
+    assert "volume" in steps_by_generation[volume_generation.generation_id].reason.lower()
+    assert "installer" in steps_by_generation[volume_generation.generation_id].reason.lower()
+
+
+def test_normal_obsolete_helper_remains_plan_only_safe_and_active_is_blocked():
+    plan = plan_launchservices_remediation(analyze_generations(volume_regression_records()))
+    steps_by_generation = {step.generation_id: step for step in plan.steps}
+    skipped_by_generation = {generation["generation_id"]: generation for generation in plan.to_json_dict()["skipped_generations"]}
+
+    assert steps_by_generation["google-chrome:148.0.7778.216:applications-google-chrome-app"].safety == RemediationSafety.PLAN_ONLY_SAFE
+    assert skipped_by_generation["google-chrome:149.0.7827.250:applications-google-chrome-app"]["safety"] == "BLOCKED_ACTIVE_GENERATION"
+
+
+def test_local_network_plan_summary_counts_nonexistent_volume_generation_as_manual_review(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(volume_regression_records()))
+    result = CliRunner().invoke(app, ["solve", "local-network", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert list(payload)[:6] == ["command", "diagnosis", "evidence", "matched_rules", "repair_candidates", "next_action"]
+    summary = payload["remediation_plan_summary"]
+    chrome_summary = next(item for item in summary["product_summaries"] if item["product_family"] == "Google Chrome")
+    assert chrome_summary["mounted_installer_generation_count"] == 1
+    assert summary["safety_summary"]["MANUAL_REVIEW_REQUIRED"] == 1
+
+
+def test_remediation_plan_json_schema_is_deterministic():
+    payload = plan_launchservices_remediation(analyze_generations(planning_records())).to_json_dict()
+
+    assert list(payload) == [
+        "command",
+        "plan_id",
+        "created_at",
+        "product_family",
+        "active_generation",
+        "candidate_generations",
+        "skipped_generations",
+        "safety_summary",
+        "steps",
+        "verification_commands",
+        "warnings",
+    ]
+    assert payload["command"] == "launchservices plan"
+    assert list(payload["steps"][0]) == [
+        "step_id",
+        "action",
+        "product_family",
+        "generation_id",
+        "target_registrations",
+        "reason",
+        "safety",
+        "executable",
+        "requires_confirmation",
+        "rollback",
+        "expected_effect",
+    ]
+
+
+def test_remediation_plan_human_output_is_stable():
+    output = render_remediation_plan(plan_launchservices_remediation(analyze_generations(planning_records())))
+
+    assert output.startswith("LaunchServices remediation plan")
+    assert "Product family: Google Chrome" in output
+    assert "Active generation: 149.0.7827.250" in output
+    assert "planned candidate generations" in output
+    assert "manual review" in output
+    assert "Executable in future: no" in output
+    assert "No active generation is selected for cleanup" in output
+
+
+def test_launchservices_plan_cli_json_and_human(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
+    runner = CliRunner()
+
+    json_result = runner.invoke(app, ["launchservices", "plan", "--json"])
+    human_result = runner.invoke(app, ["launchservices", "plan"])
+
+    assert json_result.exit_code == 0
+    assert json.loads(json_result.stdout)["command"] == "launchservices plan"
+    assert human_result.exit_code == 0
+    assert "LaunchServices remediation plan" in human_result.stdout
+
+
+def test_launchservices_execute_plan_dry_run_uses_generation_planner_human_output(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "LaunchServices output: execute-plan" not in result.stdout
+    assert "Stale entries:" not in result.stdout
+    assert "LaunchServices execute-plan dry run" in result.stdout
+    assert "Plan ID:" in result.stdout
+    assert "dry_run: yes" in result.stdout
+    assert "Product family: Chromium-family" in result.stdout
+    assert "Active generation:" in result.stdout
+    assert "Candidate generations" in result.stdout
+    assert "Skipped generations" in result.stdout
+    assert "Expected effect:" in result.stdout
+    assert "Safety:" in result.stdout
+    assert "Executable in future:" in result.stdout
+    assert "Verification commands" in result.stdout
+    assert "Warnings" in result.stdout
+    assert "No commands were executed." in result.stdout
+    assert "manual-review-only; not executable in dry run" in result.stdout
+    assert "execution is not implemented yet" in result.stdout
+
+
+def test_launchservices_execute_plan_dry_run_json_is_deterministic_and_non_mutating(monkeypatch, tmp_path):
+    calls: list[bool] = []
+
+    def fake_snapshot(fast: bool = False):
+        calls.append(fast)
+        return snapshot(planning_records())
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", fake_snapshot)
+    audit_log = tmp_path / "dry-run-audit.jsonl"
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--dry-run", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert list(payload) == [
+        "command",
+        "plan_id",
+        "dry_run",
+        "commands_executed",
+        "product_family",
+        "active_generation",
+        "candidate_generations",
+        "skipped_generations",
+        "safety_summary",
+        "steps",
+        "verification_commands",
+        "warnings",
+        "message",
+    ]
+    assert payload["command"] == "launchservices execute-plan"
+    assert payload["dry_run"] is True
+    assert payload["commands_executed"] == []
+    assert payload["message"] == "No commands were executed. Dry-run only; LaunchServices mutation is not implemented."
+    assert calls == [True]
+    assert not (tmp_path / "execute-plan").exists()
+
+
+def test_launchservices_execute_plan_dry_run_step_executability(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--dry-run", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    manual_steps = [step for step in payload["steps"] if step["safety"] == "MANUAL_REVIEW_REQUIRED"]
+    plan_only_steps = [step for step in payload["steps"] if step["safety"] == "PLAN_ONLY_SAFE"]
+    assert manual_steps
+    assert plan_only_steps
+    assert all(step["executable"] is False for step in manual_steps)
+    assert all("manual-review-only" in step["execution_status"] for step in manual_steps)
+    assert all(step["executable"] is False for step in plan_only_steps)
+    assert all("execution is not implemented yet" in step["execution_status"] for step in plan_only_steps)
+
+
+def test_launchservices_execute_plan_dry_run_writes_jsonl_audit(monkeypatch, tmp_path):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
+    audit_log = tmp_path / "audit" / "launchservices.jsonl"
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--dry-run", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert len(events) == 1
+    assert list(events[0]) == ["event", "command", "plan_id", "dry_run", "commands_executed", "step_count", "safety_summary", "message"]
+    assert events[0]["event"] == "launchservices_execute_plan_dry_run"
+    assert events[0]["command"] == "launchservices execute-plan"
+    assert events[0]["dry_run"] is True
+    assert events[0]["commands_executed"] == []
+
+
+def records_after_plan_only_execution(records: list[LaunchServicesRecord]) -> list[LaunchServicesRecord]:
+    return [item for item in records if "Versions/148.0.7778.216" not in (item.path_clean or item.path or "")]
+
+
+def test_launchservices_execute_plan_confirm_executes_only_plan_only_safe_generations(monkeypatch):
+    calls: list[list[str]] = []
+    before_records = planning_records()
+    after_records = records_after_plan_only_execution(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: calls.append(command) or {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "launchservices execute-plan"
+    assert payload["dry_run"] is False
+    assert payload["confirmed"] is True
+    assert payload["status"] == "MUTATED_AND_REMOVED"
+    assert payload["final_verdict"] == "MUTATED_AND_REMOVED"
+    assert payload["before_generation_count"] > payload["after_generation_count"]
+    assert payload["executed_steps"]
+    assert all(step["safety"] == "PLAN_ONLY_SAFE" for step in payload["executed_steps"])
+    assert all(step["mutation_result"] == "MUTATED_AND_REMOVED" for step in payload["executed_steps"])
+    assert all("148.0.7778.216" in " ".join(step["registration_ids"]) for step in payload["executed_steps"])
+    assert calls
+    called_text = "\n".join(" ".join(command) for command in calls)
+    assert "Versions/148.0.7778.216" in called_text
+    assert "/Volumes/Google Chrome" not in called_text
+    assert ".Trash/Google Chrome.app" not in called_text
+    assert "GoogleUpdater" not in called_text
+    skipped = {step["generation_id"]: step for step in payload["skipped_steps"]}
+    assert skipped["google-chrome:149.0.7827.201:volumes-google-chrome-google-chrome-app"]["result"] == "NOT_EXECUTED"
+    assert skipped["google-chrome:149.0.7827.201:users-patrick-trash-google-chrome-app"]["result"] == "NOT_EXECUTED"
+    assert skipped["google-chrome:149.0.7827.250:applications-google-chrome-app"]["result"] == "NOT_EXECUTED"
+
+
+def test_launchservices_execute_plan_confirm_aborts_on_verification_failure(monkeypatch):
+    calls: list[list[str]] = []
+    before_records = planning_records()
+    snapshots = [snapshot(before_records), snapshot(before_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(before_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: calls.append(command) or {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "MUTATED_BUT_REGENERATED"
+    assert payload["final_verdict"] == "MUTATED_BUT_REGENERATED"
+    assert payload["executed_steps"][0]["verification"]["result"] == "MUTATED_BUT_REGENERATED"
+    assert payload["executed_steps"][0]["mutation_result"] == "MUTATED_BUT_REGENERATED"
+    assert payload["executed_steps"][0]["verification"]["generation_count_decreased"] is False
+    assert payload["executed_steps"][0]["verification"]["executed_generation_absent"] is False
+    assert payload["generation_diff"]["still_present"]
+    assert payload["errors"]
+    assert len(payload["executed_steps"]) == 1
+
+
+def test_launchservices_execute_plan_confirm_fails_when_generation_count_drops_but_executed_generation_remains(monkeypatch):
+    calls: list[list[str]] = []
+    before_records = planning_records()
+    # Simulate stale/cached post-mutation evidence: unrelated generations disappeared,
+    # but the executed PLAN_ONLY_SAFE Chrome generation is still present in the fresh analyzer output.
+    after_records = [item for item in before_records if "GoogleUpdater" not in (item.path_clean or item.path or "") and ".Trash" not in (item.path_clean or item.path or "")]
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: calls.append(command) or {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "MUTATED_BUT_REGENERATED"
+    assert payload["final_verdict"] == "MUTATED_BUT_REGENERATED"
+    assert payload["before_generation_count"] > payload["after_generation_count"]
+    step = payload["executed_steps"][0]
+    assert step["verification"]["executed_generation_absent"] is False
+    assert step["generation_id"] in payload["generation_diff"]["still_present"]
+    assert step["generation_id"] in payload["generation_diff"]["unchanged"]
+    assert step["generation_id"] not in payload["generation_diff"]["removed"]
+
+
+def test_launchservices_execute_plan_confirm_uses_fully_fresh_snapshot_after_mutation(monkeypatch):
+    calls: list[bool] = []
+    before_records = planning_records()
+    after_records = records_after_plan_only_execution(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    def fake_snapshot(fast=False):
+        calls.append(fast)
+        return snapshots.pop(0) if snapshots else snapshot(after_records)
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", fake_snapshot)
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 0
+    assert calls[:2] == [True, False]
+
+
+def test_launchservices_execute_plan_confirm_reports_mutation_failed(monkeypatch):
+    before_records = planning_records()
+    snapshots = [snapshot(before_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(before_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 13, "stdout": "", "stderr": "permission denied"})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "MUTATION_FAILED"
+    assert payload["final_verdict"] == "MUTATION_FAILED"
+    assert payload["executed_steps"][0]["mutation_result"] == "MUTATION_FAILED"
+    assert payload["executed_steps"][0]["mutation_primitives"][0]["return_value"] == 13
+    assert payload["executed_steps"][0]["mutation_primitives"][0]["errno"] == 13
+    assert "permission denied" in payload["errors"][0]
+
+
+def test_launchservices_execute_plan_confirm_detects_regeneration_and_blocks_local_network_improvement(monkeypatch):
+    calls: list[list[str]] = []
+    before_records = planning_records()
+    after_records = list(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: calls.append(command) or {"command": command, "exit_code": 0, "stdout": "removed transiently", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    step = payload["executed_steps"][0]
+    assert step["mutation_result"] == "MUTATED_BUT_REGENERATED"
+    assert step["verification"]["result"] == "MUTATED_BUT_REGENERATED"
+    assert step["verification"]["regeneration_source"] == "fresh LaunchServices analysis still reports the executed generation"
+    assert step["verification"]["local_network_evidence_improves_or_consistent"] is False
+    assert step["generation_id"] in payload["generation_diff"]["regenerated"]
+
+
+def test_launchservices_execute_plan_confirm_audit_is_deterministic(monkeypatch, tmp_path):
+    before_records = planning_records()
+    after_records = records_after_plan_only_execution(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+    audit_log = tmp_path / "audit" / "launchservices-execute.jsonl"
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert len(events) == 2
+    assert list(events[0]) == ["event", "command", "plan_id", "generation_id", "registration_ids", "mutation_primitives", "commands", "verification", "before_generation_count", "after_generation_count", "errors", "rollback_metadata"]
+    assert events[0]["event"] == "launchservices_execute_plan_generation"
+    assert events[0]["command"] == "launchservices execute-plan"
+    assert events[0]["registration_ids"]
+    primitive = events[0]["mutation_primitives"][0]
+    assert list(primitive) == ["api", "command", "file", "launchservices_call", "return_value", "errno", "stdout", "stderr", "osstatus", "affected_registration_ids"]
+    assert primitive["api"] == "lsregister"
+    assert primitive["launchservices_call"] == "unregister"
+    assert primitive["affected_registration_ids"]
+    assert events[0]["before_generation_count"] > events[0]["after_generation_count"]
+    assert events[0]["verification"]["result"] == "MUTATED_AND_REMOVED"
+    run_event = events[1]
+    assert list(run_event) == ["event", "command", "plan_id", "confirmed", "status", "final_verdict", "before_generation_count", "after_generation_count", "generation_diff", "executed_step_count", "skipped_step_count", "commands_executed", "errors"]
+    assert run_event["event"] == "launchservices_execute_plan_run"
+    assert run_event["status"] == "MUTATED_AND_REMOVED"
+    assert run_event["executed_step_count"] == 1
+
+
+def test_launchservices_execute_plan_confirm_writes_audit_for_unknown_skipped_only_run(monkeypatch, tmp_path):
+    records = skipped_only_records()
+    audit_log = tmp_path / "audit" / "unknown.jsonl"
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(records))
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "UNKNOWN"
+    assert payload["executed_steps"] == []
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert len(events) == 1
+    assert events[0]["event"] == "launchservices_execute_plan_run"
+    assert events[0]["status"] == "UNKNOWN"
+    assert events[0]["executed_step_count"] == 0
+    assert events[0]["skipped_step_count"] == len(payload["skipped_steps"])
+    assert events[0]["errors"] == []
+
+
+def test_launchservices_execute_plan_confirm_writes_run_audit_for_failed_execution(monkeypatch, tmp_path):
+    before_records = planning_records()
+    audit_log = tmp_path / "audit" / "failed.jsonl"
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(before_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 13, "stdout": "", "stderr": "permission denied"})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm", "--json", "--audit-log", str(audit_log)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert [event["event"] for event in events] == ["launchservices_execute_plan_generation", "launchservices_execute_plan_run"]
+    assert events[-1]["status"] == "MUTATION_FAILED"
+    assert events[-1]["final_verdict"] == payload["final_verdict"]
+    assert events[-1]["errors"]
+
+
+def test_launchservices_execute_plan_confirm_human_output_marks_manual_review_not_executed(monkeypatch):
+    before_records = planning_records()
+    after_records = records_after_plan_only_execution(before_records)
+    snapshots = [snapshot(before_records), snapshot(after_records)]
+
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshots.pop(0) if snapshots else snapshot(after_records))
+    monkeypatch.setattr("macos_state_explorer.cli._run_launchservices_command", lambda command: {"command": command, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = CliRunner().invoke(app, ["launchservices", "execute-plan", "--confirm"])
+
+    assert result.exit_code == 0
+    assert "LaunchServices execute-plan execution" in result.stdout
+    assert "Result: MUTATED_AND_REMOVED" in result.stdout
+    assert "Mutation" in result.stdout
+    assert "Fresh analysis" in result.stdout
+    assert "Generation diff" in result.stdout
+    assert "Evidence diff" in result.stdout
+    assert "Final verdict: MUTATED_AND_REMOVED" in result.stdout
+    assert "Mutation performed:" in result.stdout
+    assert "Verification:" in result.stdout
+    assert "NOT EXECUTED" in result.stdout
+    assert "Manual review required" in result.stdout
+    assert "/Volumes/Google Chrome" in result.stdout
+
+
+def test_local_network_solution_and_report_include_additive_plan_summary(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
+    runner = CliRunner()
+
+    solve_result = runner.invoke(app, ["solve", "local-network", "--json"])
+    report_result = runner.invoke(app, ["report", "local-network", "--json"])
+
+    assert solve_result.exit_code == 0
+    solve_payload = json.loads(solve_result.stdout)
+    assert list(solve_payload)[:6] == ["command", "diagnosis", "evidence", "matched_rules", "repair_candidates", "next_action"]
+    assert "remediation_plan_summary" in solve_payload
+    assert "No active generation is selected for cleanup" in solve_payload["remediation_plan_summary"]["warnings"]
+
+    assert report_result.exit_code == 0
+    report_payload = json.loads(report_result.stdout)
+    assert list(report_payload)[:9] == ["command", "system_context", "trace", "diagnosis", "evidence", "matched_rules", "repair_candidates", "verification", "next_actions"]
+    assert "remediation_plan_summary" in report_payload
+    assert report_payload["remediation_plan_summary"]["product_summaries"][0]["product_family"] == "Google Chrome"
+
+
+def test_local_network_human_output_includes_selective_plan_summary(monkeypatch):
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: snapshot(planning_records()))
+    result = CliRunner().invoke(app, ["solve", "local-network"])
+
+    assert result.exit_code == 0
+    assert "Selective LaunchServices remediation plan" in result.stdout
+    assert "Google Chrome: 1 obsolete generation can be planned" in result.stdout
+    assert "Google Chrome: 1 mounted installer generation requires manual review" in result.stdout
+    assert "Google Chrome: 1 Trash generation requires manual review" in result.stdout
+    assert "No active generation is selected for cleanup" in result.stdout
+
+
+def test_internal_generation_planning_note_exists_and_explains_plan_only_scope():
+    note = __import__("pathlib").Path("docs/LAUNCHSERVICES_REMEDIATION_PLANNING.md").read_text()
+
+    assert "generation-based" in note
+    assert "plan-only" in note
+    assert "real-world plan validation" in note
+
+
+def test_phase1_execution_note_documents_chrome_only_safety_scope():
+    note = __import__("pathlib").Path("docs/LAUNCHSERVICES_SELECTIVE_EXECUTION_PHASE1.md").read_text()
+
+    assert "PLAN_ONLY_SAFE" in note
+    assert "Google Chrome" in note
+    assert "mounted or nonexistent installer volume" in note
+    assert "Trash generations" in note
+    assert "Future milestones" in note
+
+
+def test_persistent_mutation_validation_note_documents_false_success():
+    note = __import__("pathlib").Path("docs/LAUNCHSERVICES_PERSISTENT_MUTATION_VALIDATION.md").read_text()
+
+    assert "Observed real-world result" in note
+    assert "previous SUCCESS was incorrect" in note
+    assert "Mutation versus persistent state change" in note
+    assert "MUTATED_BUT_REGENERATED" in note
+    assert "Only `MUTATED_AND_REMOVED`" in note

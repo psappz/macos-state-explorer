@@ -1,32 +1,24 @@
 # Architecture
 
-macOS State Explorer is a read-only forensic analysis platform.
+Open State Diagnostics & Repair Framework is the public project name for this evidence-driven diagnostic and repair framework.
 
-## Layers
+The repository currently remains named `macos-state-explorer`; that identifier is retained only for repository, package, import-path, and command-context compatibility.
 
-1. Collectors  
-   Read system state without modifying it.
+Open State Diagnostics & Repair Framework separates reusable diagnostic framework capability from domain-specific engines.
 
-2. Snapshot Store  
-   Stores observations in a stable versioned format.
+## Core vs Engine principle
 
-3. Inference Engine  
-   Produces hypotheses from evidence.
+Core must not contain domain-specific logic.
 
-4. Reports  
-   Generates human-readable HTML and JSON reports.
+Core owns domain-neutral capabilities:
 
-5. Experiments  
-   Runs before/after workflows.
+- snapshot structure
+- evidence and observation plumbing
+- reporting and support-bundle plumbing
+- bundle diff plumbing
+- audit ingestion plumbing
+- CLI wiring
 
-## Core Concepts
+Every domain-specific implementation must be an Engine. Engines own collectors, parsers, classifiers, planners, outcome models, remediation constraints, and domain-specific safety rules.
 
-- Observation
-- Evidence
-- Snapshot
-- Hypothesis
-- Experiment
-
-## Safety
-
-The project must not reset TCC, delete caches, unregister apps, or modify macOS system state.
+The current macOS/LaunchServices implementation is the first public reference engine and reference case.

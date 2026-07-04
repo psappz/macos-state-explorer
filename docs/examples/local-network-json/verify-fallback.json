@@ -1,0 +1,89 @@
+{
+  "command": "verify local-network",
+  "status": "FAILED",
+  "branch_id": "manual-empty-trash-reboot",
+  "transition": "fallback-to-current-plan",
+  "expected_change": "LaunchServices Chrome/Google stale evidence is absent after the manual repair.",
+  "observed_result": "Chrome/Google LaunchServices stale or orphaned evidence is still present, and 'manual-empty-trash-reboot' is not in the current evidence-ranked plan.",
+  "current_diagnosis": {
+    "diagnosis": "TCC does not currently show Local Network authorization rows.",
+    "confidence": 0.85,
+    "most_likely_cause": "The app has not triggered a real Local Network permission flow in the collected TCC state.",
+    "evidence": [
+      {
+        "id": "finding.launchservices.stale_app_paths",
+        "title": "Stale app paths",
+        "summary": "1 LaunchServices registrations point to paths that do not currently exist.",
+        "severity": "medium",
+        "confidence": 0.85,
+        "evidence_ids": [
+          "launchservices.stale_app_paths"
+        ]
+      },
+      {
+        "id": "finding.tcc.no_localnetwork_rows",
+        "title": "TCC has no Local Network rows",
+        "summary": "No kTCCServiceLocalNetwork rows were found in collected TCC data.",
+        "severity": "medium",
+        "confidence": 0.9,
+        "evidence_ids": [
+          "tcc.no_localnetwork_rows"
+        ]
+      }
+    ],
+    "recommended_next_action": {
+      "id": "localnetwork.trigger_real_access",
+      "title": "Launch the affected app and trigger real local network access",
+      "description": "Open the affected app, perform an action that reaches a local device or Bonjour service, then verify System Settings > Privacy & Security > Local Network.",
+      "risk": "low",
+      "mode": "manual",
+      "commands": [],
+      "expected_result": "macOS prompts for Local Network permission or writes a TCC Local Network row after real access."
+    },
+    "risk": "low",
+    "expected_result": "macOS prompts for Local Network permission or writes a TCC Local Network row after real access.",
+    "verification": {
+      "title": "Rerun diagnosis",
+      "command": "mse diagnose local-network",
+      "expected_result": "The diagnosis reflects the new TCC state after the app attempts local network access."
+    },
+    "fallback_path": [
+      {
+        "id": "localnetwork.trace_if_no_prompt",
+        "title": "Trace Local Network behavior if no prompt appears",
+        "description": "Capture a read-only trace if the app accesses local network resources but no prompt appears.",
+        "risk": "low",
+        "mode": "read-only",
+        "commands": [
+          "mse trace local-network ~/Desktop/mse-local-network-trace"
+        ],
+        "expected_result": "Trace artifacts show whether the app reaches APIs that should trigger Local Network privacy."
+      }
+    ]
+  },
+  "evidence_ids": [
+    "launchservices.stale_app_paths"
+  ],
+  "continues_workflow": true,
+  "next_repair_candidate": {
+    "id": "manual-reinstall-chrome",
+    "title": "Manually reinstall Google Chrome from a fresh download",
+    "risk": "Low to medium: user-driven app reinstall; bookmarks/profile data should remain in the Chrome profile, but the tool will not remove or edit any files.",
+    "manual_action": "Quit Chrome normally, download Chrome from Google, install it into /Applications, reboot, and open Chrome once. Do not use this tool to remove app bundles or profiles.",
+    "expected_result": "A fresh signed /Applications registration should replace code-sign-clone or orphaned LaunchServices records as the active Chrome identity.",
+    "verification_command": "mse diagnose local-network",
+    "fallback_branch": "If Local Network still shows the same broken Chrome state, continue with branch 3: capture a focused trace.",
+    "evidence_ids": [
+      "LN-E001",
+      "LN-E002",
+      "LN-E008"
+    ]
+  },
+  "next_action": {
+    "type": "fallback-to-current-plan",
+    "step": "Continue with manual-reinstall-chrome: Manually reinstall Google Chrome from a fresh download.",
+    "command": "mse diagnose local-network"
+  },
+  "retry_guidance": "Retry the same branch only if manual-empty-trash-reboot was not fully completed or macOS was not rebooted before verification.",
+  "fallback_guidance": "If the next branch does not change the diagnosis, follow its fallback: If Local Network still shows the same broken Chrome state, continue with branch 3: capture a focused trace."
+}
