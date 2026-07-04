@@ -43,24 +43,60 @@ def snapshot(
     *,
     entries: list[dict[str, object]] | None = None,
     tcc_stdout: str = "client row",
+    functional_state: dict[str, object] | None = None,
 ) -> Snapshot:
-    return Snapshot(
-        host="test-host",
-        observations=[
+    observations = [
+        Observation(
+            collector="launchservices",
+            started_at=1,
+            ended_at=2,
+            payload={"entries": entries or []},
+        ),
+        Observation(
+            collector="tcc",
+            started_at=1,
+            ended_at=2,
+            payload={"direct_localnetwork_query": {"stdout": tcc_stdout}},
+        ),
+    ]
+    if functional_state is not None:
+        observations.append(
             Observation(
-                collector="launchservices",
+                collector="local_network_functional_state",
                 started_at=1,
                 ended_at=2,
-                payload={"entries": entries or []},
-            ),
-            Observation(
-                collector="tcc",
-                started_at=1,
-                ended_at=2,
-                payload={"direct_localnetwork_query": {"stdout": tcc_stdout}},
-            ),
-        ],
-    )
+                payload=functional_state,
+            )
+        )
+    return Snapshot(host="test-host", observations=observations)
+
+
+def healthy_functional_state() -> dict[str, object]:
+    return {
+        "local_network_ui": "healthy",
+        "chrome_entry_count": 1,
+        "permission_enabled": True,
+        "communication": "successful",
+    }
+
+
+def failed_functional_state() -> dict[str, object]:
+    return {
+        "local_network_ui": "healthy",
+        "chrome_entry_count": 1,
+        "permission_enabled": True,
+        "communication": "failed",
+    }
+
+
+def broken_networkextension_state() -> dict[str, object]:
+    return {
+        "local_network_ui": "broken",
+        "chrome_entry_count": 0,
+        "permission_enabled": False,
+        "communication": "unknown",
+        "networkextension": "broken",
+    }
 
 
 def commands_from_diagnosis(diagnosis) -> list[str]:
@@ -78,6 +114,70 @@ def test_diagnosis_detects_orphaned_chrome_launchservices_records():
     assert "LaunchServices" in diagnosis.most_likely_cause
     assert diagnosis.confidence >= 0.85
     assert any("Orphaned" in finding.title for finding in diagnosis.evidence)
+
+
+def test_diagnosis_separates_stale_launchservices_from_healthy_functional_state():
+    diagnosis = diagnose_local_network(
+        snapshot(
+            entries=[launchservices_entry()],
+            tcc_stdout="com.google.Chrome kTCCServiceLocalNetwork allowed=1",
+            functional_state=healthy_functional_state(),
+        )
+    )
+
+    assert diagnosis.current_risk == "LOW"
+    assert diagnosis.functional_state.status == "HEALTHY"
+    assert diagnosis.functional_state.communication == "successful"
+    assert diagnosis.historical_evidence.launchservices_stale_count == 1
+    assert diagnosis.confidence_scores.historical_confidence > diagnosis.confidence_scores.failure_confidence
+    assert "not currently affecting Local Network functionality" in diagnosis.diagnosis
+    assert diagnosis.risk == "low"
+
+
+def test_diagnosis_degrades_when_stale_launchservices_and_communication_fails():
+    diagnosis = diagnose_local_network(
+        snapshot(
+            entries=[launchservices_entry()],
+            tcc_stdout="com.google.Chrome kTCCServiceLocalNetwork allowed=1",
+            functional_state=failed_functional_state(),
+        )
+    )
+
+    assert diagnosis.current_risk == "MEDIUM"
+    assert diagnosis.functional_state.status == "DEGRADED"
+    assert diagnosis.functional_state.communication == "failed"
+    assert "communication is currently failing" in diagnosis.diagnosis
+    assert diagnosis.confidence_scores.failure_confidence >= 0.6
+
+
+def test_diagnosis_healthy_when_no_stale_evidence_and_functional_state_healthy():
+    diagnosis = diagnose_local_network(
+        snapshot(
+            entries=[],
+            tcc_stdout="com.google.Chrome kTCCServiceLocalNetwork allowed=1",
+            functional_state=healthy_functional_state(),
+        )
+    )
+
+    assert diagnosis.current_risk == "LOW"
+    assert diagnosis.functional_state.status == "HEALTHY"
+    assert diagnosis.historical_evidence.launchservices_stale_count == 0
+    assert "Local Network permissions are healthy" in diagnosis.diagnosis
+
+
+def test_diagnosis_broken_when_networkextension_functional_state_is_broken():
+    diagnosis = diagnose_local_network(
+        snapshot(
+            entries=[launchservices_entry()],
+            tcc_stdout="",
+            functional_state=broken_networkextension_state(),
+        )
+    )
+
+    assert diagnosis.current_risk == "HIGH"
+    assert diagnosis.functional_state.status == "BROKEN"
+    assert "NetworkExtension or Local Network functional state is broken" in diagnosis.diagnosis
+    assert diagnosis.confidence_scores.failure_confidence > diagnosis.confidence_scores.historical_confidence
 
 
 def test_diagnosis_detects_missing_tcc_localnetwork_rows():

@@ -17,6 +17,7 @@ from macos_state_explorer.diagnostics.framework import (
     RepairSafety,
 )
 from macos_state_explorer.diagnostics.local_network.evidence import collect_local_network_evidence
+from macos_state_explorer.diagnostics.local_network.reasoning import build_local_network_reasoning_from_evidence
 from macos_state_explorer.diagnostics.local_network.rules import LOCAL_NETWORK_RULES
 from macos_state_explorer.diagnostics.rules import RuleMatch
 
@@ -104,6 +105,14 @@ def local_network_diagnosis_builder(
     context: dict[str, Any] | None = None,
 ) -> str:
     evidence_by_id = {item.id: item for item in evidence}
+    context = context or {}
+    trace_analysis = context.get("trace_analysis")
+    reasoning = build_local_network_reasoning_from_evidence(
+        evidence,
+        trace_analysis=trace_analysis if isinstance(trace_analysis, dict) else None,
+    )
+    if reasoning.current_functional_state.status in {"HEALTHY", "DEGRADED", "BROKEN"}:
+        return reasoning.conclusion
 
     def present(evidence_id: str) -> bool:
         item = evidence_by_id.get(evidence_id)

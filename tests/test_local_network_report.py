@@ -431,6 +431,35 @@ def test_report_cli_json_output_is_parseable_and_uses_contract(monkeypatch):
     assert payload["verification"]["status"] == "FAILED"
 
 
+def test_report_json_includes_functional_state_reasoning_without_removing_evidence(monkeypatch, tmp_path):
+    trace = _trace_analysis()
+    trace["functional_state"] = {
+        "local_network_ui": "healthy",
+        "chrome_entry_count": 1,
+        "permission_enabled": True,
+        "communication": "successful",
+    }
+    bundle_dir = tmp_path / "functional-state-bundle"
+    monkeypatch.setattr("macos_state_explorer.cli.create_snapshot", lambda fast=False: _snapshot())
+    monkeypatch.setattr("macos_state_explorer.cli.load_trace_analysis", lambda trace_path: trace)
+
+    result = CliRunner().invoke(
+        app,
+        ["report", "local-network", "--trace", "trace.json", "--bundle", str(bundle_dir), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    bundle_payload = json.loads((bundle_dir / "report.json").read_text())
+    assert payload["local_network_reasoning_summary"]["current_risk"] == "LOW"
+    assert payload["local_network_reasoning_summary"]["diagnosis_state"] == "HEALTHY_WITH_HISTORICAL_EVIDENCE"
+    assert payload["local_network_reasoning_summary"] == bundle_payload["local_network_reasoning_summary"]
+    assert any(item["id"] == "LN-E002" and item["present"] for item in bundle_payload["evidence"])
+    report_text = (bundle_dir / "report.txt").read_text()
+    assert "Current functional state" in report_text
+    assert "Historical LaunchServices orphaned registrations remain present but are not currently affecting Local Network functionality." in report_text
+
+
 def test_report_bundle_writes_deterministic_support_directory(monkeypatch, tmp_path):
     trace_dir = _write_trace_fixture(tmp_path / "trace")
     bundle_dir = tmp_path / "support-bundle"
