@@ -66,8 +66,9 @@ def export_evidence_bundle(
     registry: EvidenceBundleRegistry,
 ) -> EvidenceBundleExport:
     normalized = request.normalized()
+    provider = registry.provider_for(normalized)
     prepare_export_output(normalized.output)
-    export = registry.provider_for(normalized).export(normalized)
+    export = provider.export(normalized)
     write_manifest(export.output / "manifest.json", export.manifest)
     return export
 

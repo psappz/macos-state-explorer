@@ -89,7 +89,11 @@ def _artifact_manifest(output: Path) -> list[dict[str, str]]:
         "support-bundle/environment.json": "Local environment summary for support context.",
     }
     entries: list[dict[str, str]] = []
-    for path in sorted(item for item in output.rglob("*") if item.is_file() and item.name != "manifest.json"):
+    for path in sorted(
+        item
+        for item in output.rglob("*")
+        if item.is_file() and item.relative_to(output).as_posix() != "manifest.json"
+    ):
         relative = path.relative_to(output).as_posix()
         media_type = _media_type_for(path)
         entries.append(

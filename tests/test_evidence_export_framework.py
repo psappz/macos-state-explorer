@@ -101,19 +101,21 @@ def test_export_core_is_provider_registry_driven_and_not_apple_specific(tmp_path
 def test_export_evidence_bundle_rejects_unregistered_combination(tmp_path: Path):
     registry = EvidenceBundleRegistry()
 
+    output = tmp_path / "export"
     try:
         export_evidence_bundle(
             EvidenceBundleExportRequest(
                 audience="vendor-feedback",
                 target="cloudflare",
                 issue="waap",
-                output=tmp_path / "export",
+                output=output,
             ),
             registry=registry,
         )
     except ValueError as error:
         assert "No evidence export provider registered" in str(error)
         assert "vendor-feedback/cloudflare/waap" in str(error)
+        assert not output.exists()
     else:
         raise AssertionError("expected unsupported export combination to fail")
 
