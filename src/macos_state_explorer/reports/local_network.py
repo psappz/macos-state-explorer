@@ -96,6 +96,7 @@ class LocalNetworkReport:
             if self.launchservices_analysis
             else None
         )
+        payload["launchservices_fix_ready_runbook"] = _launchservices_fix_ready_runbook_to_json(payload)
         payload["audit_context"] = _audit_context_to_json(self.launchservices_audit_log, self.solution.launchservices_outcome_summary)
         return payload
 
@@ -186,6 +187,8 @@ class LocalNetworkReport:
             lines.extend(["", render_networkextension_apply_validation_summary(payload["networkextension_apply_validation_summary"])])
         if payload.get("repair_branch_status"):
             lines.extend(["", _render_repair_branch_status(payload["repair_branch_status"])])
+        if payload.get("launchservices_fix_ready_runbook", {}).get("available"):
+            lines.extend(["", _render_launchservices_fix_ready_runbook(payload["launchservices_fix_ready_runbook"])])
 
         lines.append("")
         lines.append("Matched rules")
@@ -245,10 +248,12 @@ def write_local_network_support_bundle(
         ),
         launchservices_audit_log=effective_audit_log,
     )
+    report_json = effective_report.to_json_dict()
+    report_text = effective_report.render_text()
     bundle = build_support_bundle(
         bundle_path,
-        report_json=effective_report.to_json_dict(),
-        report_text=effective_report.render_text(),
+        report_json=report_json,
+        report_text=report_text,
         command_metadata={
             "command": "mse report local-network --bundle",
             "branch": branch_id,
@@ -334,6 +339,9 @@ def write_local_network_support_bundle(
     networkextension_apply_validation = _report_networkextension_apply_validation()
     (bundle / "networkextension-apply-validation.json").write_text(json.dumps(networkextension_apply_validation.to_json_dict(), indent=2, ensure_ascii=False) + "\n")
     (bundle / "networkextension-apply-validation.txt").write_text(render_networkextension_apply_validation(networkextension_apply_validation) + "\n")
+    fix_ready_runbook = report_json["launchservices_fix_ready_runbook"]
+    (bundle / "launchservices-fix-ready-runbook.json").write_text(json.dumps(fix_ready_runbook, indent=2, ensure_ascii=False) + "\n")
+    (bundle / "launchservices-fix-ready-runbook.txt").write_text(_render_launchservices_fix_ready_runbook(fix_ready_runbook) + "\n")
     return bundle
 
 
@@ -676,3 +684,98 @@ def _render_repair_branch_status(status: dict[str, Any]) -> str:
             f"- Next action focus: {status.get('next_action_focus', 'unknown')}",
         ]
     )
+
+
+def _launchservices_fix_ready_runbook_to_json(payload: dict[str, Any]) -> dict[str, Any]:
+    repair_branch_status = payload.get("repair_branch_status")
+    status = repair_branch_status if isinstance(repair_branch_status, dict) else {}
+    networkextension_value = status.get("networkextension")
+    launchservices_value = status.get("launchservices")
+    networkextension = networkextension_value if isinstance(networkextension_value, dict) else {}
+    launchservices = launchservices_value if isinstance(launchservices_value, dict) else {}
+    networkextension_completed = networkextension.get("status") == "COMPLETED"
+    launchservices_unresolved = launchservices.get("status") == "UNRESOLVED"
+    focus_is_launchservices = status.get("next_action_focus") == "launchservices"
+    evidence_matches = _launchservices_fix_ready_evidence_present(payload)
+    available = networkextension_completed and launchservices_unresolved and focus_is_launchservices and evidence_matches
+    if available:
+        reason = "NetworkExtension is complete and LaunchServices evidence remains for Chrome/Google registrations."
+    elif not networkextension_completed:
+        reason = "NetworkExtension branch is not completed."
+    elif not launchservices_unresolved:
+        reason = "LaunchServices evidence is clear."
+    elif not focus_is_launchservices:
+        reason = "Next action focus is not LaunchServices."
+    else:
+        reason = "LaunchServices evidence does not include Trash or stale Chrome/Google registrations."
+    return {
+        "available": available,
+        "reason": reason,
+        "blocked_by_networkextension": not networkextension_completed,
+        "next_real_world_fix_attempt": "manual_empty_trash_reboot" if available else None,
+        "operator_steps": [
+            "Inspect Finder Trash manually.",
+            "Only empty Trash if it contains disposable Chrome/Google leftovers.",
+            "Reboot macOS.",
+            "Open System Settings → Privacy & Security → Local Network.",
+            "Run verification again.",
+        ] if available else [],
+        "verification_command": "mse verify local-network --branch manual-empty-trash-reboot" if available else None,
+        "fallback_branch": "continue_launchservices_branch" if available else None,
+        "do_not_continue_networkextension": available,
+    }
+
+
+def _launchservices_fix_ready_evidence_present(payload: dict[str, Any]) -> bool:
+    analysis = payload.get("launchservices_analysis")
+    if isinstance(analysis, dict):
+        records = analysis.get("records")
+        if isinstance(records, list):
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                haystack = " ".join(str(record.get(key, "")) for key in ("bundle_id", "path", "path_clean", "classification"))
+                lowered = haystack.lower()
+                is_trash_or_stale = "trash" in lowered or "stale" in lowered or "orphan" in lowered
+                is_chrome_or_google = "chrome" in lowered or "google" in lowered
+                if is_trash_or_stale and is_chrome_or_google:
+                    return True
+    evidence_items = payload.get("evidence")
+    if not isinstance(evidence_items, list):
+        return False
+    for evidence in evidence_items:
+        if not isinstance(evidence, dict) or not evidence.get("present"):
+            continue
+        haystack = " ".join(str(evidence.get(key, "")) for key in ("id", "title", "detail", "source"))
+        lowered = haystack.lower()
+        is_launchservices = "launchservices" in lowered
+        is_trash_or_stale = "trash" in lowered or "stale" in lowered or "orphan" in lowered
+        is_chrome_or_google = "chrome" in lowered or "google" in lowered
+        if is_launchservices and is_trash_or_stale and is_chrome_or_google:
+            return True
+    return False
+
+
+def _render_launchservices_fix_ready_runbook(runbook: dict[str, Any]) -> str:
+    if not runbook.get("available"):
+        return "\n".join(
+            [
+                "LaunchServices fix-ready runbook",
+                "- Available: False",
+                f"- Reason: {runbook.get('reason', 'unavailable')}",
+            ]
+        )
+    lines = [
+        "LaunchServices fix-ready runbook",
+        "- NetworkExtension is complete; do not continue NetworkExtension repair work for this case unless new blocking NetworkExtension evidence appears.",
+        "- The next real-world fix attempt is LaunchServices-focused.",
+        "- Operator action:",
+    ]
+    lines.extend(f"  {index}. {step}" for index, step in enumerate(runbook.get("operator_steps", []), start=1))
+    lines.extend(
+        [
+            f"- Verification command: {runbook.get('verification_command')}",
+            "- If verification still fails, continue to the next LaunchServices branch, not NetworkExtension.",
+        ]
+    )
+    return "\n".join(lines)
