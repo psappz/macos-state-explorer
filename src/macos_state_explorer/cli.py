@@ -20,6 +20,8 @@ from macos_state_explorer.diagnostics.local_network.renderer import render_termi
 from macos_state_explorer.diagnostics.local_network.verification import render_verification_report, verify_local_network
 from macos_state_explorer.evidence.engine import extract_evidence
 from macos_state_explorer.experiments.local_network import experiment_local_network
+from macos_state_explorer.exports.framework import EvidenceBundleExportRequest, EvidenceBundleRegistry, export_evidence_bundle
+from macos_state_explorer.exports.local_network import register_local_network_exports
 from macos_state_explorer.launchservices.analysis import analysis_from_snapshot_payload, analysis_records_from_snapshot_payload, render_launchservices_analysis
 from macos_state_explorer.launchservices.cleanup_checklist import build_launchservices_cleanup_checklist, render_launchservices_cleanup_checklist
 from macos_state_explorer.launchservices.cleanup_verification import build_launchservices_cleanup_verification, render_launchservices_cleanup_verification
@@ -66,6 +68,7 @@ verify_app = typer.Typer(no_args_is_help=True)
 report_app = typer.Typer(no_args_is_help=True)
 repair_app = typer.Typer(no_args_is_help=True)
 diff_app = typer.Typer(no_args_is_help=True)
+export_app = typer.Typer(no_args_is_help=True)
 networkextension_app = typer.Typer(no_args_is_help=True)
 app.add_typer(trace_app, name="trace")
 app.add_typer(experiment_app, name="experiment")
@@ -75,6 +78,7 @@ app.add_typer(verify_app, name="verify")
 app.add_typer(report_app, name="report")
 app.add_typer(repair_app, name="repair")
 app.add_typer(diff_app, name="diff")
+app.add_typer(export_app, name="export")
 app.add_typer(networkextension_app, name="networkextension")
 console = Console()
 
@@ -2075,6 +2079,32 @@ def diff_bundles_cmd(
         typer.echo(json_module.dumps(diff, sort_keys=False))
     else:
         typer.echo(_render_bundle_diff(diff))
+
+
+@export_app.command("evidence-bundle")
+def export_evidence_bundle_cmd(
+    audience: str = typer.Option(..., "--audience", help="Audience profile, for example vendor-feedback."),
+    target: str = typer.Option(..., "--target", help="Target/vendor profile, for example apple."),
+    issue: str = typer.Option(..., "--issue", help="Issue provider or engine, for example local-network."),
+    output: Path = typer.Option(..., "--output", help="Directory where the evidence bundle will be written."),
+):
+    registry = EvidenceBundleRegistry()
+    register_local_network_exports(registry)
+    try:
+        export = export_evidence_bundle(
+            EvidenceBundleExportRequest(
+                audience=audience,
+                target=target,
+                issue=issue,
+                output=output,
+            ),
+            registry=registry,
+        )
+    except ValueError as error:
+        typer.echo(str(error))
+        raise typer.Exit(1) from error
+    typer.echo(f"Evidence bundle export: {export.output}")
+    typer.echo(f"Manifest: {export.output / 'manifest.json'}")
 
 
 @report_app.command("local-network")
